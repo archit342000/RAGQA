@@ -3,6 +3,44 @@
 This toolkit derives an in-domain evaluation dataset for the RAG system. It
 operates purely on the cleaned, parsed documents already produced by the app.
 
+## Pass A: LLM span mining quickstart
+
+1. **Start vLLM with an OpenAI-compatible server**
+
+   ```bash
+   python -m vllm.entrypoints.openai.api_server --model <hf-id-or-path> --host 0.0.0.0 --port 8000
+   ```
+
+2. **Configure environment variables**
+
+   The miner automatically loads `.env`. Ensure it includes the vLLM endpoint and
+   API token (override with `export` if you prefer):
+
+   ```bash
+   # .env defaults
+   VLLM_BASE_URL=http://localhost:8000/v1
+   VLLM_API_KEY=dummy
+   ```
+
+3. **Run the mining pass**
+
+   ```bash
+    python gold/llm_mine.py \
+      --parsed artifacts/parsed_docs \
+      --out gold/mined_atoms.jsonl \
+      --config gold/llm_config.yaml \
+      --concurrency 4 \
+      --resume
+   ```
+
+Notes:
+
+- Responses are cached per window under `gold/.cache/<hash>.json` when `--resume`
+  is supplied.
+- Each mined atom is span-validated; invalid responses are dropped.
+- If the model ignores the JSON response format hint, ensure the prompt in
+  `gold/prompts.py` enforces JSON-only output.
+
 ## Pipeline
 
 1. **Extract candidates**
