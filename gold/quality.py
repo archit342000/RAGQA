@@ -153,7 +153,6 @@ def no_vague_pronoun(question: str) -> bool:
 
 def no_vague_pronouns(question: str) -> bool:
     """Backward compatible alias exposed for legacy callers."""
-
     return no_vague_pronoun(question)
 
 
@@ -224,7 +223,6 @@ def enforce_wh_distribution(
     seed: int,
 ) -> List[str]:
     """Subsample questions so WH categories respect requested shares."""
-
     if not questions:
         return []
 

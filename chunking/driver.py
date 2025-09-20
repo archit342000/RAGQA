@@ -15,7 +15,7 @@ from typing import Dict, List, Sequence, Tuple
 
 from env_loader import load_dotenv_once
 
-from chunking.semantic_chunker import semantic_segments
+import chunking.semantic_chunker as semantic_chunker
 from chunking.segmenter import segment_page
 from chunking.types import Block, Chunk
 from chunking.packer import get_tokenizer, pack_blocks
@@ -60,7 +60,7 @@ def _semantic_or_fixed_blocks(
     if not semantic_enabled or table_heavy:
         return base_blocks, "fixed"
 
-    segments = semantic_segments(text, model_name=model_name)
+    segments = semantic_chunker.semantic_segments(text, model_name=model_name)
     if not segments:
         return base_blocks, "fixed"
 

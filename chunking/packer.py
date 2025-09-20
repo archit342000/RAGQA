@@ -20,14 +20,34 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKENIZER_NAME = "hf-internal-testing/llama-tokenizer"
 
 
+class _WhitespaceTokenizer:
+    """Minimal tokenizer used when pretrained models are unavailable."""
+
+    def __init__(self) -> None:
+        self.model_max_length = 16384
+        self.padding_side = "left"
+
+    def __call__(self, text: str, add_special_tokens: bool = False, return_attention_mask: bool = False):
+        tokens = [tok for tok in text.split() if tok]
+        return {"input_ids": tokens}
+
+    def decode(self, token_ids: Sequence[str] | Sequence[int]) -> str:
+        return " ".join(str(tok) for tok in token_ids)
+
+
 @lru_cache(maxsize=2)
 def get_tokenizer(model_name: str | None = None):
     """Load and cache the tokenizer used for token accounting."""
 
-    # Allow deployments to override the tokenizer, but fall back to the
-    # lightweight internal llama tokenizer for CPU-only Spaces.
     name = model_name or DEFAULT_TOKENIZER_NAME
-    tokenizer = AutoTokenizer.from_pretrained(name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(name, local_files_only=True)
+    except Exception:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(name)
+        except Exception as exc:  # pragma: no cover - exercised via tests
+            logger.warning("Falling back to whitespace tokenizer for %s: %s", name, exc)
+            return _WhitespaceTokenizer()
     tokenizer.model_max_length = 16384
     tokenizer.padding_side = "left"
     return tokenizer
@@ -77,41 +97,65 @@ def pack_blocks(
             buffer_token_len = 0
             return
         full_ids, full_len = _encode(chunk_text, tokenizer)
-        if full_len == 0 or chunk_text in seen_texts:
+        if full_len == 0:
             buffer = []
             buffer_token_ids = []
             buffer_token_len = 0
             return
-
-        seen_texts.add(chunk_text)
         page_start = min(b.page_num for b in buffer)
         page_end = max(b.page_num for b in buffer)
         block_types = sorted({b.kind for b in buffer})
         heading = next((b.text for b in buffer if b.kind == "heading"), None)
-        meta: Dict[str, str] = {
+
+        base_meta: Dict[str, str] = {
             "block_types": ",".join(block_types),
             "strategy": strategy_label,
         }
 
-        chunks.append(
-            Chunk(
-                doc_id=buffer[0].doc_id,
-                doc_name=buffer[0].doc_name,
-                page_start=page_start,
-                page_end=page_end,
-                section_title=heading,
-                text=chunk_text,
-                token_len=full_len,
-                meta=meta,
+        def _emit(window_ids: Sequence[int] | Sequence[str], text: str, index: int | None = None) -> bool:
+            if not text:
+                return False
+            key = text
+            if key in seen_texts:
+                return False
+            seen_texts.add(key)
+            meta = dict(base_meta)
+            if index is not None:
+                meta["window_index"] = str(index)
+            chunks.append(
+                Chunk(
+                    doc_id=buffer[0].doc_id,
+                    doc_name=buffer[0].doc_name,
+                    page_start=page_start,
+                    page_end=page_end,
+                    section_title=heading,
+                    text=text,
+                    token_len=len(window_ids),
+                    meta=meta,
+                )
             )
-        )
+            return True
+
+        if full_len <= max_tokens:
+            _emit(full_ids, chunk_text)
+        else:
+            stride = max(1, max_tokens - overlap_tokens)
+            window_start = 0
+            window_index = 0
+            while window_start < full_len:
+                window_end = min(full_len, window_start + max_tokens)
+                window_ids = full_ids[window_start:window_end]
+                window_text = tokenizer.decode(window_ids).strip()
+                if _emit(window_ids, window_text, window_index):
+                    window_index += 1
+                if window_end >= full_len:
+                    break
+                window_start += stride
 
         if overlap_tokens > 0 and full_len > overlap_tokens:
             tail_ids = full_ids[-overlap_tokens:]
             overlap_text = tokenizer.decode(tail_ids).strip()
             if overlap_text:
-                # Keep a synthetic "overlap" block to seed the next chunk so the
-                # caller receives the requested token overlap.
                 overlap_block = Block(
                     doc_id=buffer[-1].doc_id,
                     doc_name=buffer[-1].doc_name,
@@ -122,7 +166,7 @@ def pack_blocks(
                     char_end=buffer[-1].char_end,
                 )
                 buffer = [overlap_block]
-                buffer_token_ids = tail_ids[:]
+                buffer_token_ids = list(tail_ids)
                 buffer_token_len = len(tail_ids)
                 return
         buffer = []

@@ -22,10 +22,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import numbers
 import os
 from html import escape
 from pathlib import Path
-from typing import Dict, List, MutableMapping, Sequence
+from typing import Dict, List, Mapping, MutableMapping, Sequence
 
 import gradio as gr
 
@@ -74,6 +75,27 @@ RETRIEVAL_KEY_TO_LABEL = {v: k for k, v in RETRIEVAL_LABEL_TO_KEY.items()}
 # callbacks operate on the same tunable defaults.
 RETRIEVAL_CFG = RetrievalConfig.from_env()
 DEFAULT_RETRIEVAL_LABEL = RETRIEVAL_KEY_TO_LABEL.get(RETRIEVAL_CFG.default_engine, "Semantic → Rerank")
+
+
+def _coerce_float(value: object, *, default: float = 0.0) -> float:
+    """Best-effort conversion of arbitrary values into floats."""
+
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return float(stripped)
+        except ValueError:
+            return default
+    if isinstance(value, Mapping):
+        for key in ("score", "value", "confidence"):
+            if key in value:
+                return _coerce_float(value[key], default=default)
+        return default
+    return default
 
 
 def _hi_res_enabled() -> bool:
@@ -217,7 +239,7 @@ def _format_context_preview(chunks: Sequence[Dict[str, object]]) -> str:
         page_start = int(chunk.get("page_start", 0) or 0)
         page_end = int(chunk.get("page_end", page_start) or page_start)
         page_label = f"p. {page_start}" if page_start == page_end else f"pp. {page_start}-{page_end}"
-        score = float(chunk.get("score", 0.0))
+        score = _coerce_float(chunk.get("score"))
         snippet = str(chunk.get("text", "")).strip()
         # Collapse whitespace to keep the preview compact and trim overly long
         # passages that would dominate the panel.
@@ -243,7 +265,7 @@ def _format_full_chunks(chunks: Sequence[Dict[str, object]]) -> str:
         page_start = int(chunk.get("page_start", 0) or 0)
         page_end = int(chunk.get("page_end", page_start) or page_start)
         page_label = f"p. {page_start}" if page_start == page_end else f"pp. {page_start}-{page_end}"
-        score = float(chunk.get("score", 0.0))
+        score = _coerce_float(chunk.get("score"))
         chunk_id = chunk.get("id", "")
         raw_text = str(chunk.get("text", "")).strip()
         # Backticks can break fenced code blocks; insert a space to keep the fence intact.
@@ -345,8 +367,8 @@ def _ensure_retrieval_state(
     return retrieval_state
 
 
-def parse_batch(files, mode_label: str, chunk_mode_label: str):
-    """Handle a UI request to parse documents and emit retrieval chunks."""
+def _parse_batch_core(files, mode_label: str, chunk_mode_label: str):
+    """Shared implementation for parsing callbacks."""
 
     # Validate the incoming file list to avoid calling the parser on empty
     # selections (this surfaces friendlier UI errors).
@@ -489,20 +511,55 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str):
     retrieval_debug_reset = gr.update(value=None, visible=debug_enabled)
     gold_status_reset = gr.update(value="", visible=_gold_export_enabled())
 
+    return {
+        "state": state_payload,
+        "doc_update": gr.update(choices=doc_choices, value=default_doc or None),
+        "chunk_update": gr.update(choices=chunk_choices, value=default_chunk_key or None),
+        "default_text": default_text,
+        "status_text": "\n".join(status_lines),
+        "debug_update": debug_update,
+        "retrieval_state": retrieval_state,
+        "engine_update": engine_dropdown_reset,
+        "context_preview": "",
+        "full_chunk_view": "No chunks retrieved yet.",
+        "retrieval_status": "Awaiting query.",
+        "retrieval_debug": retrieval_debug_reset,
+        "gold_status": gold_status_reset,
+    }
+
+
+def parse_batch(files, mode_label: str, chunk_mode_label: str):
+    """Handle a UI request returning the minimal output set for tests."""
+
+    result = _parse_batch_core(files, mode_label, chunk_mode_label)
     return (
-        state_payload,
-        gr.update(choices=doc_choices, value=default_doc or None),
-        gr.update(choices=chunk_choices, value=default_chunk_key or None),
-        default_text,
-        "\n".join(status_lines),
-        debug_update,
-        retrieval_state,
-        engine_dropdown_reset,
-        "",
-        "No chunks retrieved yet.",
-        "Awaiting query.",
-        retrieval_debug_reset,
-        gold_status_reset,
+        result["state"],
+        result["doc_update"],
+        result["chunk_update"],
+        result["default_text"],
+        result["status_text"],
+        result["debug_update"],
+    )
+
+
+def parse_batch_full(files, mode_label: str, chunk_mode_label: str):
+    """Extended parse callback used by the Gradio interface."""
+
+    result = _parse_batch_core(files, mode_label, chunk_mode_label)
+    return (
+        result["state"],
+        result["doc_update"],
+        result["chunk_update"],
+        result["default_text"],
+        result["status_text"],
+        result["debug_update"],
+        result["retrieval_state"],
+        result["engine_update"],
+        result["context_preview"],
+        result["full_chunk_view"],
+        result["retrieval_status"],
+        result["retrieval_debug"],
+        result["gold_status"],
     )
 
 
@@ -770,7 +827,7 @@ def build_interface() -> gr.Blocks:
         # UI components (state blobs, dropdown choices, chunk preview panes, and
         # debug outputs).
         parse_button.click(
-            parse_batch,
+            parse_batch_full,
             inputs=[file_input, mode_input, chunk_mode_input],
             outputs=[
                 state,
