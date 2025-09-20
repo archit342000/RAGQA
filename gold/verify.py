@@ -1,12 +1,13 @@
-"""Validation utilities for synthesized QA items."""
+"""Validation helpers for LLM-generated synthesis and mining payloads."""
 
 from __future__ import annotations
 
+import hashlib
 import re
-from typing import Any, List
+from typing import Any, Iterable, List
 
 import orjson
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 _ALLOWED_WH = {
     "what",
@@ -89,6 +90,95 @@ class SynthItem(BaseModel):
         return value
 
 
+class Atom(BaseModel):
+    """Schema for atomic facts produced during the mining pass."""
+
+    kind: str
+    text: str
+    char_start: int
+    char_end: int
+    labels: List[str] = Field(default_factory=list)
+    evidence: List[dict] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("kind", "text", mode="before")
+    @classmethod
+    def _strip_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _ensure_kind(cls, value: str) -> str:
+        if not value:
+            raise ValueError("kind must be provided")
+        return value
+
+    @field_validator("char_start", "char_end", mode="before")
+    @classmethod
+    def _coerce_int(cls, value: Any) -> Any:
+        if isinstance(value, bool):  # bool is subclass of int
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return value
+            try:
+                return int(float(stripped))
+            except ValueError:
+                return value
+        return value
+
+    @field_validator("labels", "tags", mode="before")
+    @classmethod
+    def _coerce_str_list(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, Iterable):
+            return []
+        result: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                candidate = item.strip()
+            else:
+                candidate = str(item).strip()
+            if candidate:
+                result.append(candidate)
+        return result
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _coerce_evidence(cls, value: Any) -> List[dict]:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, (str, bytes)):
+            return []
+        if not isinstance(value, Iterable):
+            return []
+        result: List[dict] = []
+        for item in value:
+            if isinstance(item, dict):
+                result.append(item)
+        return result
+
+    @model_validator(mode="after")
+    def _validate_span(self) -> "Atom":
+        if self.char_start < 0 or self.char_end <= self.char_start:
+            raise ValueError("invalid span indices")
+        if not self.text:
+            raise ValueError("text cannot be empty")
+        return self
+
+
 def validate_synth_items(raw: List[Any]) -> List[SynthItem]:
     """Validate raw decoded items and keep only those adhering to the schema."""
 
@@ -106,3 +196,40 @@ def validate_synth_items(raw: List[Any]) -> List[SynthItem]:
             continue
         valid.append(item)
     return valid
+
+
+def hash_atom(doc_id: str, window_id: str, char_start: int, char_end: int) -> str:
+    """Derive a stable identifier for a mined atom span."""
+
+    payload = f"{doc_id}|{window_id}|{char_start}|{char_end}".encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()[:16]
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize(text: str) -> str:
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def strict_span_match(window_text: str, char_start: int, char_end: int, text: str) -> bool:
+    """Return True if the character offsets cleanly align with the provided text."""
+
+    if char_start < 0 or char_end <= char_start:
+        return False
+    if char_end > len(window_text):
+        return False
+    extracted = window_text[char_start:char_end]
+    if extracted == text:
+        return True
+    return _normalize(extracted) == _normalize(text)
+
+
+__all__ = [
+    "SynthItem",
+    "Atom",
+    "parse_json_array",
+    "validate_synth_items",
+    "hash_atom",
+    "strict_span_match",
+]
