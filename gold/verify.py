@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, List
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 class Atom(BaseModel):
@@ -19,12 +19,7 @@ class Atom(BaseModel):
     evidence: List[dict] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
 
-    @field_validator("kind", "text")
-    @classmethod
-    def _strip_strings(cls, value: str) -> str:
-        if not isinstance(value, str):
-            raise TypeError("expected string")
-        return value.strip()
+    model_config = {"extra": "ignore"}
 
     @model_validator(mode="after")
     def _check_spans(self) -> "Atom":
@@ -33,8 +28,6 @@ class Atom(BaseModel):
         if len(self.text) > 300:
             raise ValueError("text exceeds 300 characters")
         return self
-
-    model_config = {"extra": "ignore"}
 
 
 def strict_span_match(window_text: str, start: int, end: int, text: str) -> bool:
