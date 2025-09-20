@@ -1,0 +1,43 @@
+paths:
+  parsed_docs_dir: "artifacts/parsed_docs"
+  chunks_path: "artifacts/chunks.jsonl"
+  out_dir: "gold"
+
+quotas:
+  total: 100
+  by_tag:
+    numeric: 0.25
+    table: 0.10
+    paraphrase: 0.40
+    acronym: 0.10
+    whyhow: 0.15
+    definition: 0.10
+    caption: 0.05
+
+limits:
+  max_answer_chars: 300
+  min_answer_chars: 5
+  max_candidates_per_page: 10
+  max_questions_per_span: 4
+
+hard_negatives: 5
+seed: 42
+
+wh_targets:
+  what: 0.35
+  which: 0.15
+  who: 0.02
+  when: 0.05
+  where: 0.05
+  why: 0.15
+  how: 0.15
+  how_many: 0.04
+  how_much: 0.04
+  aux: 0.05
+
+banned_openings:
+  - "what is "
+  - "what’s "
+
+min_doc_items: 3
+max_doc_items: 40

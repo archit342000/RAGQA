@@ -1,0 +1,37 @@
+{
+  "total": 1095,
+  "by_tag": {
+    "definition": 779,
+    "acronym": 12,
+    "table": 594,
+    "numeric": 44
+  },
+  "by_doc": {
+    "a0450f8cb93a": 1095
+  },
+  "wh": {
+    "which": 169,
+    "how_many": 45,
+    "what": 289,
+    "who": 12,
+    "why": 111,
+    "where": 138,
+    "aux": 154,
+    "how": 112,
+    "when": 54,
+    "how_much": 11
+  },
+  "mean_answer_chars": 57.34885844748858,
+  "reject_reasons": {
+    "vague_pronoun": 498,
+    "banned_opening": 391,
+    "not_answerable": 199,
+    "entity_anchor": 52
+  },
+  "tag_counts": {
+    "definition": 1021,
+    "table": 478,
+    "acronym": 7,
+    "numeric": 52
+  }
+}

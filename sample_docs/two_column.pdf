@@ -1,0 +1,76 @@
+%PDF-1.4
+1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj
+2 0 obj<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>endobj
+3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources<< /Font<< /F1 7 0 R >> >> /Contents 5 0 R >>endobj
+5 0 obj<< /Length 249 >>stream
+BT
+/F1 12 Tf
+14 TL
+72 720 Td
+(Two Column Fixture) Tj
+T*
+(Page 1 - Short numeric lines mimic tabular columns.) Tj
+T*
+(A1  B1  C1) Tj
+T*
+(A2  B2  C2) Tj
+T*
+(A3  B3  C3) Tj
+T*
+(A4  B4  C4) Tj
+T*
+() Tj
+T*
+(123 | 456 | 789) Tj
+T*
+(234 | 567 | 890) Tj
+ET
+endstream
+endobj
+4 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources<< /Font<< /F1 7 0 R >> >> /Contents 6 0 R >>endobj
+6 0 obj<< /Length 259 >>stream
+BT
+/F1 12 Tf
+14 TL
+72 720 Td
+(Two Column Fixture) Tj
+T*
+(Page 2 - Additional structured content.) Tj
+T*
+(Q1: 45%) Tj
+T*
+(Q2: 51%) Tj
+T*
+(Q3: 63%) Tj
+T*
+(Q4: 72%) Tj
+T*
+() Tj
+T*
+(Totals) Tj
+T*
+(North 120) Tj
+T*
+(South 98) Tj
+T*
+(West 76) Tj
+T*
+(East 65) Tj
+ET
+endstream
+endobj
+7 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000056 00000 n 
+0000000117 00000 n 
+0000000239 00000 n 
+0000000536 00000 n 
+0000000658 00000 n 
+0000000965 00000 n 
+trailer<< /Size 8 /Root 1 0 R >>
+startxref
+1033
+%%EOF

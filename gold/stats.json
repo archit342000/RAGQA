@@ -1,0 +1,52 @@
+{
+  "candidate_summary": {
+    "total": 871,
+    "by_tag": {
+      "definition": 643,
+      "acronym": 12,
+      "table": 451,
+      "numeric": 33
+    },
+    "by_doc": {
+      "a0450f8cb93a": 871
+    },
+    "wh": {
+      "which": 126,
+      "how_many": 35,
+      "what": 241,
+      "who": 9,
+      "why": 96,
+      "where": 105,
+      "aux": 122,
+      "how": 89,
+      "when": 40,
+      "how_much": 8
+    },
+    "mean_answer_chars": 56.63834672789897
+  },
+  "gold": {
+    "count": 40,
+    "tag_counts": {
+      "numeric": 25,
+      "table": 15,
+      "acronym": 5,
+      "definition": 4
+    },
+    "wh_counts": {
+      "when": 8,
+      "how_much": 4,
+      "what": 6,
+      "aux": 13,
+      "which": 3,
+      "how": 3,
+      "how_many": 1,
+      "where": 2
+    }
+  },
+  "reject_reasons": {
+    "vague_pronoun": 498,
+    "banned_opening": 391,
+    "not_answerable": 199,
+    "entity_anchor": 52
+  }
+}
