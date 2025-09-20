@@ -1,62 +1,108 @@
-"""Validation utilities for mined atomic facts."""
+"""Validation utilities for synthesized QA items."""
 
 from __future__ import annotations
 
-import hashlib
+import re
 from typing import Any, List
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+import orjson
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+_ALLOWED_WH = {
+    "what",
+    "which",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "how_many",
+    "how_much",
+    "aux",
+}
 
 
-class Atom(BaseModel):
-    """Single mined atomic fact."""
+def _strip_code_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9]*", "", text, count=1).strip()
+        text = re.sub(r"```$", "", text).strip()
+    return text
 
-    kind: str
-    text: str
-    char_start: int
-    char_end: int
-    labels: List[str] = Field(default_factory=list)
+
+def parse_json_array(text: str) -> List[Any]:
+    """Parse a JSON array emitted by the LLM."""
+
+    cleaned = _strip_code_fences(text)
+    if not cleaned:
+        return []
+    try:
+        data = orjson.loads(cleaned)
+    except orjson.JSONDecodeError as exc:
+        raise ValueError("Failed to parse JSON array") from exc
+    if not isinstance(data, list):
+        raise ValueError("Expected a JSON array")
+    return data
+
+
+class SynthItem(BaseModel):
+    question: str
+    wh: str
+    type: str
+    answer_text: str
     evidence: List[dict] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
-    @model_validator(mode="after")
-    def _check_spans(self) -> "Atom":
-        if self.char_start < 0 or self.char_end <= self.char_start:
-            raise ValueError("invalid character span")
-        if len(self.text) > 300:
-            raise ValueError("text exceeds 300 characters")
-        return self
+    @field_validator("question", "wh", "type", "answer_text", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("question")
+    @classmethod
+    def _check_question(cls, value: str) -> str:
+        if not value or len(value) > 320:
+            raise ValueError("invalid question length")
+        return value
+
+    @field_validator("wh")
+    @classmethod
+    def _normalize_wh(cls, value: str) -> str:
+        lowered = value.lower()
+        if lowered not in _ALLOWED_WH:
+            # Allow custom WH but ensure non-empty
+            if not lowered:
+                raise ValueError("wh must be provided")
+        return lowered
+
+    @field_validator("answer_text")
+    @classmethod
+    def _check_answer(cls, value: str) -> str:
+        if not value:
+            raise ValueError("answer_text cannot be empty")
+        if len(value) > 300:
+            raise ValueError("answer_text too long")
+        return value
 
 
-def strict_span_match(window_text: str, start: int, end: int, text: str) -> bool:
-    """Return True when indices match the verbatim substring in window_text."""
-
-    if start < 0 or end > len(window_text) or end <= start:
-        return False
-    return window_text[start:end] == text
-
-
-def validate_atoms(raw: Any, window_text: str) -> List[Atom]:
-    """Validate raw LLM output against the schema and the supplied window text."""
+def validate_synth_items(raw: List[Any]) -> List[SynthItem]:
+    """Validate raw decoded items and keep only those adhering to the schema."""
 
     if not isinstance(raw, list):
         return []
-    valid: List[Atom] = []
+    valid: List[SynthItem] = []
     for entry in raw:
+        if not isinstance(entry, dict):
+            continue
         try:
-            atom = Atom.model_validate(entry)
+            item = SynthItem.model_validate(entry)
         except ValidationError:
             continue
-        if not strict_span_match(window_text, atom.char_start, atom.char_end, atom.text):
+        if not item.question.endswith("?"):
             continue
-        valid.append(atom)
+        valid.append(item)
     return valid
-
-
-def hash_atom(doc_id: str, window_id: str, start: int, end: int) -> str:
-    """Stable identifier hash for a mined atom."""
-
-    payload = f"{doc_id}|{window_id}|{start}|{end}".encode("utf-8")
-    return hashlib.sha1(payload).hexdigest()
