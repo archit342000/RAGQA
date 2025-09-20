@@ -71,7 +71,7 @@ class VLLMClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self._client.post("chat/completions", json=payload)
+                response = self._client.post("/chat/completions", json=payload)
             except httpx.HTTPError as exc:  # network issue
                 logger.warning(
                     "LLM request error on attempt %d/%d: %s",
