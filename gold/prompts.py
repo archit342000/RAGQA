@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 MINING_SYSTEM_PROMPT = (
-    "You are an information extraction engine. "
-    "Return a JSON array only, with no extra prose, describing atomic facts found in the provided window_text."
+    "You are an expert factual span miner. "
+    "Only respond with a JSON array that follows the schema and rules. "
+    "If no valid facts exist, respond with []. No prose, no code fences."
 )
 
 MINING_USER_PROMPT_TEMPLATE = """
@@ -19,7 +20,7 @@ window_text:
 {window_text}
 ```
 
-JSON schema:
+JSON schema (array of objects):
 [
   {{
     "kind": "definition|numeric|kv|table_row|sentence",
@@ -29,34 +30,33 @@ JSON schema:
     "labels": ["key: value", ...],
     "evidence": [{{"type": "sentence", "index": <int>}}, ...],
     "tags": ["tag", ...]
-  }},
-  ...
+  }}
 ]
 
 Rules:
-- Output MUST be a single JSON array with no trailing commentary.
-- window_text[char_start:char_end] == text.
-- 0 ≤ char_start < char_end ≤ len(window_text).
-- Each text value ≤ 300 characters and should capture an atomic, concrete fact.
-- Prefer short definitions, numeric values with units, key–value snippets, table rows, or concise declarative sentences.
-- Skip boilerplate, headers, footers, and vague fragments.
-- Emit at most {max_items} items for this window.
+1. window_text[char_start:char_end] == text
+2. 0 ≤ char_start < char_end ≤ len(window_text)
+3. Prefer atomic, concrete facts (short definitions, numeric-with-unit, key–value pairs, table rows, concise declaratives)
+4. Avoid boilerplate, headers, footers, and vague fragments
+5. Limit each text field to ≤ 300 characters
+6. Emit at most {max_items} items for this window
+7. Return [] when no valid atoms exist
 
-Example (truncated to two items):
+Example output (2 items maximum):
 [
   {{
     "kind": "definition",
-    "text": "Retention policy keeps data for 30 days.",
-    "char_start": 128,
-    "char_end": 166,
-    "labels": ["term: Retention policy", "duration: 30 days"],
+    "text": "The retention policy keeps backups for 30 days.",
+    "char_start": 118,
+    "char_end": 162,
+    "labels": ["term: retention policy", "duration: 30 days"],
     "tags": ["policy"]
   }},
   {{
     "kind": "numeric",
-    "text": "99.9% availability",
-    "char_start": 302,
-    "char_end": 320,
+    "text": "99.9% uptime",
+    "char_start": 278,
+    "char_end": 288,
     "labels": ["metric: availability", "unit: percent"],
     "tags": ["numeric"]
   }}
