@@ -1,84 +1,51 @@
-# Gold Set Utilities
+# LLM Gold-Set Builder
 
-This toolkit derives an in-domain evaluation dataset for the RAG system. It
-operates purely on the cleaned, parsed documents already produced by the app.
+This workflow generates high-quality QA pairs directly from parsed documents
+using a vLLM-hosted model. Questions are produced by the LLM, but answer spans
+are aligned deterministically by the codebase.
 
-## Pass A: LLM span mining quickstart
+## Quickstart
 
-1. **Start vLLM with an OpenAI-compatible server**
+1. **Start the vLLM OpenAI server**
 
    ```bash
-   python -m vllm.entrypoints.openai.api_server --model <hf-id-or-path> --host 0.0.0.0 --port 8000
+   python -m vllm.entrypoints.openai.api_server \
+     --model gpt-oss-20b --host 0.0.0.0 --port 8000
    ```
 
-2. **Configure environment variables**
-
-   The miner automatically loads `.env`. Ensure it includes the vLLM endpoint and
-   API token (override with `export` if you prefer):
+2. **Provide an API key (any non-empty string works locally)**
 
    ```bash
-   # .env defaults
-   VLLM_BASE_URL=http://localhost:8000/v1
-   VLLM_API_KEY=dummy
+   export VLLM_API_KEY="dummy"
    ```
 
-3. **Run the mining pass**
+3. **Run synthesis + gold assembly**
 
    ```bash
-    python gold/llm_mine.py \
-      --parsed artifacts/parsed_docs \
-      --out gold/mined_atoms.jsonl \
-      --config gold/llm_config.yaml \
-      --concurrency 4 \
-      --resume
-   ```
-
-Notes:
-
-- Responses are cached per window under `gold/.cache/<hash>.json` when `--resume`
-  is supplied.
-- Each mined atom is span-validated; invalid responses are dropped.
-- If the model ignores the JSON response format hint, ensure the prompt in
-  `gold/prompts.py` enforces JSON-only output.
-
-## Pipeline
-
-1. **Extract candidates**
-
-   ```bash
-   python gold/extract_candidates.py \
+   python gold/build_gold_llm.py \
      --parsed artifacts/parsed_docs \
-     --out gold/candidates.jsonl \
-     --config gold/config.yaml
-   ```
-
-   Generates `CandidateItem` rows with verified answer spans and heuristic
-   tags.
-
-2. **Paraphrase (optional)**
-
-   ```bash
-   python gold/paraphrase_verify.py \
-     --in gold/candidates.jsonl \
-     --out gold/candidates_paraphrased.jsonl \
-     --model gpt-4o-mini
-   ```
-
-   Adds paraphrased questions while re-validating the stored span.
-
-3. **Assemble final gold set**
-
-   ```bash
-   python gold/assemble.py \
-     --candidates gold/candidates.jsonl \
-     --paraphrases gold/candidates_paraphrased.jsonl \
-     --chunks artifacts/chunks.jsonl \
      --out gold/gold.jsonl \
-     --config gold/config.yaml
+     --config gold/llm_config.yaml \
+     --concurrency 4 \
+     --resume
    ```
 
-   Stratifies sampling by tag, mines hard negatives, and emits
-   `gold/gold.jsonl` plus `gold/stats.json`.
+   This command:
+   - Generates per-window candidates via `llm_synthesize.py`
+   - Aligns answer spans inside each window
+   - Applies WH-distribution quotas and writes `gold/gold.jsonl`
+   - Records run statistics in `gold/stats.json`
 
-See `gold/schema.md` for field definitions. All scripts are deterministic given
-`gold/config.yaml` and required inputs.
+The optional flag `write_candidates: true` in `gold/llm_config.yaml` also saves
+the pre-quota pool to `gold/candidates.jsonl` for inspection.
+
+## Implementation Notes
+
+- The LLM must return a JSON array of objects containing `question`, `wh`,
+  `type`, `answer_text`, and `evidence`. Character offsets are computed by the
+  alignment utilities and not supplied by the model.
+- Answer spans are validated via exact/case-insensitive/whitespace/fuzzy
+  matching. Items failing alignment, quality filters, or deduplication are
+  dropped with reasons recorded in `stats.json`.
+- WH quotas are enforced with an MMR-based sampler to maintain diversity while
+  capping dominant categories.

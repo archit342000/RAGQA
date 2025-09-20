@@ -1,12 +1,27 @@
-base_url_env: "VLLM_BASE_URL"
-model: "llama-3.2-1b-w8a8"
+base_url: "http://localhost:8000/v1"
+model: "gpt-oss-20b"
 api_key_env: "VLLM_API_KEY"
-temperature: 0.3
-max_tokens: 800
-max_items: 10
 timeout_s: 60
 seed: 42
+temperature:
+  synth: 0.7
+limits:
+  max_questions_per_window: 8
+  synth_max_tokens: 900
 window:
   max_pages: 2
   max_chars: 12000
   max_tokens: 1800
+wh_targets:
+  what: 0.35
+  which: 0.15
+  who: 0.02
+  when: 0.05
+  where: 0.05
+  why: 0.15
+  how: 0.15
+  how_many: 0.04
+  how_much: 0.04
+  aux: 0.05
+banned_openings: ["what is ", "what’s "]
+write_candidates: true
