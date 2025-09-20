@@ -1,4 +1,4 @@
-"""Thin OpenAI-compatible client for vLLM-backed models."""
+"""OpenAI-compatible client tailored for vLLM chat completions."""
 
 from __future__ import annotations
 
@@ -14,15 +14,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class VLLMClient:
-    """HTTP client wrapper around the OpenAI-compatible chat completions API."""
+    """Synchronous HTTP client for the OpenAI-compatible chat API exposed by vLLM."""
 
     base_url: str
     api_key: str
     model: str
     timeout_s: int = 60
     max_retries: int = 5
-    backoff_base: float = 1.5
+    backoff_base: float = 1.6
     _client: httpx.Client = field(init=False, repr=False)
+    _endpoint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.base_url:
@@ -31,21 +32,23 @@ class VLLMClient:
             raise ValueError("api_key is required")
         headers = {"Authorization": f"Bearer {self.api_key}"}
         timeout = httpx.Timeout(self.timeout_s)
-        self._client = httpx.Client(
-            base_url=self.base_url.rstrip("/"),
-            headers=headers,
-            timeout=timeout,
-        )
+        base_url = self.base_url.rstrip("/")
+        self._client = httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
+        # Decide which endpoint to call depending on whether base_url already includes /v1
+        if base_url.endswith("/v1"):
+            self._endpoint = "/chat/completions"
+        else:
+            self._endpoint = "/v1/chat/completions"
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
 
         self._client.close()
 
-    def __enter__(self) -> "VLLMClient":  # pragma: no cover - convenience
+    def __enter__(self) -> "VLLMClient":  # pragma: no cover - convenience helper
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - convenience
+    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - convenience helper
         self.close()
 
     def chat(
@@ -56,7 +59,7 @@ class VLLMClient:
         seed: Optional[int],
         response_format_json: bool = True,
     ) -> str:
-        """Issue a chat completion call and return the model's text content."""
+        """Issue a chat completion request and return the text content."""
 
         payload: dict = {
             "model": self.model,
@@ -71,10 +74,10 @@ class VLLMClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self._client.post("/chat/completions", json=payload)
-            except httpx.HTTPError as exc:  # network issue
+                response = self._client.post(self._endpoint, json=payload)
+            except httpx.HTTPError as exc:
                 logger.warning(
-                    "LLM request error on attempt %d/%d: %s",
+                    "LLM request failed on attempt %d/%d: %s",
                     attempt,
                     self.max_retries,
                     exc,
@@ -85,18 +88,17 @@ class VLLMClient:
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    choice = data["choices"][0]["message"]["content"]
-                except (KeyError, IndexError, TypeError, ValueError) as exc:
-                    raise RuntimeError(
-                        f"Malformed completion payload: {response.text[:400]}"
-                    ) from exc
-                if not isinstance(choice, str):
+                    content = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError, ValueError) as exc:  # pragma: no cover - defensive
+                    text_preview = response.text[:400]
+                    raise RuntimeError(f"Malformed completion payload: {text_preview}") from exc
+                if not isinstance(content, str):
                     raise RuntimeError("Unexpected response content type")
-                return choice
+                return content
 
             if response.status_code in {429, 500, 502, 503, 504}:
                 logger.warning(
-                    "LLM returned status %s on attempt %d/%d; retrying",
+                    "LLM returned status %s on attempt %d/%d; backing off",
                     response.status_code,
                     attempt,
                     self.max_retries,
@@ -104,8 +106,8 @@ class VLLMClient:
                 self._sleep(attempt)
                 continue
 
-            text = response.text[:400]
-            raise RuntimeError(f"Unexpected LLM status {response.status_code}: {text}")
+            text_preview = response.text[:400]
+            raise RuntimeError(f"Unexpected LLM status {response.status_code}: {text_preview}")
 
         raise RuntimeError("Exceeded maximum retries for LLM request")
 
