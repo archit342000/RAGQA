@@ -20,15 +20,10 @@ from tqdm.auto import tqdm
 from gold.align import find_span
 from gold.llm_client import VLLMClient
 from gold.prompts import SYNTH_SYSTEM, SYNTH_USER_TEMPLATE
-from gold.quality import (
-    detect_wh,
-    has_banned_opening,
-    is_entity_anchored,
-    no_vague_pronoun,
-    readability_bounds,
-)
+from gold.quality import detect_wh
 from gold.verify import (
     ALLOWED_WH,
+    EvidenceItem,
     SynthItem,
     canonicalize_wh,
     parse_json_array,
@@ -72,32 +67,14 @@ def _sentence_spans(text: str) -> List[Tuple[int, int]]:
 
 
 def _resolve_evidence_spans(
-    window_text: str,
-    evidence: Sequence[dict],
+    evidence: Sequence[EvidenceItem],
     sentence_spans: Sequence[Tuple[int, int]],
 ) -> List[Tuple[int, int]]:
     spans: List[Tuple[int, int]] = []
     for entry in evidence:
-        indices: List[int] = []
-        if isinstance(entry, dict):
-            if "index" in entry and isinstance(entry["index"], int):
-                indices.append(entry["index"])
-            if "indices" in entry and isinstance(entry["indices"], list):
-                indices.extend(i for i in entry["indices"] if isinstance(i, int))
-            snippet_key = entry.get("sentence") or entry.get("text")
-            if isinstance(snippet_key, str) and snippet_key.strip():
-                snippet = snippet_key.strip()
-                loc = window_text.find(snippet)
-                if loc != -1:
-                    spans.append((loc, loc + len(snippet)))
-                    continue
-        elif isinstance(entry, int):
-            indices.append(entry)
-        for idx in indices:
-            if 0 <= idx < len(sentence_spans):
-                spans.append(sentence_spans[idx])
-            elif 1 <= idx <= len(sentence_spans):  # tolerate 1-based indexing
-                spans.append(sentence_spans[idx - 1])
+        idx = entry.index
+        if 0 <= idx < len(sentence_spans):
+            spans.append(sentence_spans[idx])
     deduped: List[Tuple[int, int]] = []
     seen: set[Tuple[int, int]] = set()
     for start, end in spans:
@@ -188,7 +165,6 @@ def _process_window(
     judge: Optional[LLMJudge],
 ) -> Tuple[List[Dict], Counter, int, int, Optional[str]]:
     max_q = config.get("limits", {}).get("max_questions_per_window", 8)
-    banned = config.get("banned_openings", [])
     temperature = config.get("temperature", {}).get("synth", 0.7)
     max_tokens = config.get("limits", {}).get("synth_max_tokens", 900)
     seed = config.get("seed")
@@ -240,9 +216,9 @@ def _process_window(
     dedup_keys: set[Tuple[str, str]] = set()
 
     for item in valid_items:
-        evidence_spans = _resolve_evidence_spans(window["window_text"], item.evidence, sentence_spans)
+        evidence_spans = _resolve_evidence_spans(item.evidence, sentence_spans)
         try:
-            record = _process_item(item, window, sentence_spans, banned, evidence_spans)
+            record = _process_item(item, window, sentence_spans, evidence_spans)
         except _DropItem as drop:
             drop_reasons.update({drop.reason: 1})
             continue
@@ -295,7 +271,6 @@ def _process_item(
     item: SynthItem,
     window: Dict,
     sentence_spans: Sequence[Tuple[int, int]],
-    banned_openings: Sequence[str],
     evidence_spans: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Dict:
     question = item.question.strip()
@@ -303,26 +278,32 @@ def _process_item(
     if not answer_text:
         raise _DropItem("empty_answer")
 
+    if not sentence_spans:
+        raise _DropItem("no_sentence_spans")
+
+    indices = [entry.index for entry in item.evidence]
+    if len(indices) != len(set(indices)):
+        raise _DropItem("duplicate_evidence")
+    if any(idx < 0 or idx >= len(sentence_spans) for idx in indices):
+        raise _DropItem("evidence_oob")
+    if indices != sorted(indices):
+        raise _DropItem("evidence_unsorted")
+
     if evidence_spans is None:
-        evidence_spans = _resolve_evidence_spans(window["window_text"], item.evidence, sentence_spans)
+        evidence_spans = _resolve_evidence_spans(item.evidence, sentence_spans)
+    if not evidence_spans:
+        raise _DropItem("evidence_alignment_failed")
     span = find_span(window["window_text"], answer_text, evidence_spans)
     if span is None:
         raise _DropItem("alignment_failed")
     char_start, char_end = span
     aligned_answer = window["window_text"][char_start:char_end]
 
-    if not is_entity_anchored(question, aligned_answer, window["window_text"]):
-        raise _DropItem("anchoring")
-    if item.type.lower() != "definition" and has_banned_opening(question, banned_openings):
-        raise _DropItem("banned_opening")
-    if not no_vague_pronoun(question):
-        raise _DropItem("vague_pronoun")
-    if not readability_bounds(question):
-        raise _DropItem("readability")
-
     wh = canonicalize_wh(item.wh) if item.wh else detect_wh(question)
     if wh not in ALLOWED_WH:
         wh = detect_wh(question)
+
+    evidence_entries = [entry.model_dump() for entry in item.evidence]
 
     record = {
         "doc_id": window["doc_id"],
@@ -334,8 +315,8 @@ def _process_item(
         "answer_text": aligned_answer,
         "wh": wh,
         "type": item.type.strip(),
-        "evidence": item.evidence,
-        "tags": item.tags,
+        "evidence": evidence_entries,
+        "tags": [],
         "char_start": char_start,
         "char_end": char_end,
         "window_text": window["window_text"],
