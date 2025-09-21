@@ -52,6 +52,7 @@ def _iter_parsed_docs(parsed_dir: Path) -> Iterable[Dict]:
 
 
 _SENTENCE_REGEX = re.compile(r"[^.!?\n]+(?:[.!?]+|\n+|$)")
+_PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
 
 def _sentence_spans(text: str) -> List[Tuple[int, int]]:
@@ -133,9 +134,25 @@ def _cache_store(cache_dir: Path, cache_key: str, response: str) -> None:
     path.write_bytes(orjson.dumps(payload))
 
 
+def _format_prompt(template: str, **values: object) -> str:
+    """Safely replace ``{placeholders}`` in prompt templates."""
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key in values:
+            value = values[key]
+            if value is None:
+                return ""
+            return str(value)
+        return match.group(0)
+
+    return _PLACEHOLDER_PATTERN.sub(replace, template)
+
+
 def _build_messages(window: Dict, max_q: int, system_prompt: str) -> List[dict]:
     window_len = f"{window.get('char_len', len(window['window_text']))} chars; approx {window.get('token_count', 0)} tokens"
-    user_prompt = SYNTH_USER_TEMPLATE.format(
+    user_prompt = _format_prompt(
+        SYNTH_USER_TEMPLATE,
         doc_id=window["doc_id"],
         doc_name=window["doc_name"],
         page_start=window["page_start"],
@@ -335,7 +352,7 @@ def run_synthesis(
 ) -> Tuple[List[Dict], Dict]:
     window_cfg = config.get("window", {})
     max_q = config.get("limits", {}).get("max_questions_per_window", 8)
-    system_prompt = SYNTH_SYSTEM.format(max_q=max_q)
+    system_prompt = _format_prompt(SYNTH_SYSTEM, max_q=max_q)
 
     load_dotenv()
     api_key = os.getenv(config.get("api_key_env", "VLLM_API_KEY"), "")
