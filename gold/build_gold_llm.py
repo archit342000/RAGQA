@@ -64,26 +64,56 @@ def _write_stats(
     synth_stats: Dict,
     targets: Dict[str, float],
 ) -> None:
-    candidate_wh = Counter(item.get("wh") for item in candidates)
-    final_wh = Counter(item.get("wh") for item in balanced)
-    type_counts = Counter(item.get("type") for item in balanced)
+    candidate_wh = Counter(item.get("wh") for item in candidates if item.get("wh"))
+    final_wh = Counter(item.get("wh") for item in balanced if item.get("wh"))
+    candidate_types = Counter(item.get("type") for item in candidates if item.get("type"))
+    final_types = Counter(item.get("type") for item in balanced if item.get("type"))
     per_doc = Counter(item.get("doc_id") for item in balanced)
 
+    def _evidence_counter(items: List[dict]) -> Counter:
+        counts: Counter[str] = Counter()
+        for item in items:
+            for entry in item.get("evidence", []) or []:
+                if isinstance(entry, dict):
+                    ev_type = entry.get("type")
+                else:
+                    ev_type = None
+                if isinstance(ev_type, str):
+                    ev_value = ev_type.strip().lower()
+                    if ev_value:
+                        counts[ev_value] += 1
+        return counts
+
+    candidate_evidence = _evidence_counter(candidates)
+    final_evidence = _evidence_counter(balanced)
+
     quota_removed = {wh: candidate_wh.get(wh, 0) - final_wh.get(wh, 0) for wh in candidate_wh}
+
+    synthesis_stats = dict(synth_stats)
+    if "per_doc" in synthesis_stats:
+        synthesis_stats["per_doc"] = {
+            doc_id: dict(payload) for doc_id, payload in synthesis_stats["per_doc"].items()
+        }
+    for key in ("drop_reasons", "wh_counts", "type_counts", "evidence_type_counts"):
+        if key in synthesis_stats:
+            synthesis_stats[key] = dict(synthesis_stats[key])
 
     stats = {
         "total_candidates": len(candidates),
         "total_final": len(balanced),
         "wh_counts_candidates": dict(candidate_wh),
         "wh_counts_final": dict(final_wh),
-        "type_counts_final": dict(type_counts),
+        "type_counts_candidates": dict(candidate_types),
+        "type_counts_final": dict(final_types),
+        "evidence_type_counts_candidates": dict(candidate_evidence),
+        "evidence_type_counts_final": dict(final_evidence),
         "per_doc_final": dict(per_doc),
-        "drop_reasons": synth_stats.get("drop_reasons", {}),
+        "drop_reasons": synthesis_stats.get("drop_reasons", {}),
         "quota": {
             "targets": targets,
             "removed": quota_removed,
         },
-        "synthesis": synth_stats,
+        "synthesis": synthesis_stats,
     }
 
     stats_path.parent.mkdir(parents=True, exist_ok=True)
