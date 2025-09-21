@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import orjson
 
 from .llm_client import VLLMClient
-from .prompts import JUDGE_SYSTEM, JUDGE_USER_TEMPLATE, SYNTH_REQUIREMENTS
+from .prompts import JUDGE_SYSTEM, JUDGE_USER_TEMPLATE
 
 
 def _escape_braces(text: str) -> str:
@@ -72,7 +72,7 @@ class LLMJudge:
         temperature: float = 0.0,
         max_tokens: int = 512,
         seed: Optional[int] = None,
-        requirements: str = SYNTH_REQUIREMENTS,
+        requirements: str = "",
     ) -> None:
         self._client = client
         self.temperature = temperature
@@ -113,8 +113,16 @@ class LLMJudge:
             answer_context=answer_excerpt,
             window_text=window_text,
         )
+        system_prompt = JUDGE_SYSTEM
+        extra_requirements = self.requirements.strip()
+        if (
+            extra_requirements
+            and "{requirements}" not in JUDGE_SYSTEM
+            and "{requirements}" not in JUDGE_USER_TEMPLATE
+        ):
+            system_prompt = f"{system_prompt.rstrip()}\n\nAdditional requirements:\n{extra_requirements}"
         messages = [
-            {"role": "system", "content": JUDGE_SYSTEM},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
         response_text = self._client.chat(
@@ -199,7 +207,7 @@ def build_judge(config: Dict, client: VLLMClient) -> Optional[LLMJudge]:
     elif isinstance(requirements, str) and requirements.strip():
         requirements_text = requirements
     else:
-        requirements_text = SYNTH_REQUIREMENTS
+        requirements_text = ""
 
     return LLMJudge(
         client,
