@@ -8,7 +8,7 @@ from typing import Any, List
 import orjson
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-_ALLOWED_WH = {
+ALLOWED_WH = {
     "what",
     "which",
     "who",
@@ -20,6 +20,18 @@ _ALLOWED_WH = {
     "how_much",
     "aux",
 }
+
+
+def canonicalize_wh(value: str) -> str:
+    """Normalize WH values emitted by the LLM prompt."""
+
+    if not isinstance(value, str):
+        return ""
+    lowered = value.strip().lower()
+    if not lowered:
+        return ""
+    normalized = re.sub(r"[\s-]+", "_", lowered)
+    return normalized
 
 
 def _strip_code_fences(text: str) -> str:
@@ -72,8 +84,8 @@ class SynthItem(BaseModel):
     @field_validator("wh")
     @classmethod
     def _normalize_wh(cls, value: str) -> str:
-        lowered = value.lower()
-        if lowered not in _ALLOWED_WH:
+        lowered = canonicalize_wh(value)
+        if lowered not in ALLOWED_WH:
             # Allow custom WH but ensure non-empty
             if not lowered:
                 raise ValueError("wh must be provided")

@@ -27,26 +27,18 @@ from gold.quality import (
     no_vague_pronoun,
     readability_bounds,
 )
-from gold.verify import SynthItem, parse_json_array, validate_synth_items
+from gold.verify import (
+    ALLOWED_WH,
+    SynthItem,
+    canonicalize_wh,
+    parse_json_array,
+    validate_synth_items,
+)
 from gold.window import make_windows
 
 logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path("gold/.cache")
-_ALLOWED_WH = {
-    "what",
-    "which",
-    "who",
-    "when",
-    "where",
-    "why",
-    "how",
-    "how_many",
-    "how_much",
-    "aux",
-}
-
-
 def load_config(path: Path) -> Dict:
     with path.open("r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -286,8 +278,8 @@ def _process_item(
     if not readability_bounds(question):
         raise _DropItem("readability")
 
-    wh = item.wh.strip().lower() if item.wh else detect_wh(question)
-    if wh not in _ALLOWED_WH:
+    wh = canonicalize_wh(item.wh) if item.wh else detect_wh(question)
+    if wh not in ALLOWED_WH:
         wh = detect_wh(question)
 
     record = {
