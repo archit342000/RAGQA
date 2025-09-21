@@ -5,6 +5,10 @@ timeout_s: 60
 seed: 42
 temperature:
   synth: 0.7
+judge:
+  enabled: true
+  temperature: 0.0
+  max_tokens: 1024
 limits:
   max_questions_per_window: 8
   synth_max_tokens: 4000

@@ -35,6 +35,7 @@ from gold.verify import (
     validate_synth_items,
 )
 from gold.window import make_windows
+from gold.judge import LLMJudge, build_judge
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ def _process_window(
     system_prompt: str,
     cache_dir: Optional[Path],
     resume: bool,
+    judge: Optional[LLMJudge],
 ) -> Tuple[List[Dict], Counter, int, int, Optional[str]]:
     max_q = config.get("limits", {}).get("max_questions_per_window", 8)
     banned = config.get("banned_openings", [])
@@ -221,8 +223,9 @@ def _process_window(
     dedup_keys: set[Tuple[str, str]] = set()
 
     for item in valid_items:
+        evidence_spans = _resolve_evidence_spans(window["window_text"], item.evidence, sentence_spans)
         try:
-            record = _process_item(item, window, sentence_spans, banned)
+            record = _process_item(item, window, sentence_spans, banned, evidence_spans)
         except _DropItem as drop:
             drop_reasons.update({drop.reason: 1})
             continue
@@ -232,6 +235,26 @@ def _process_window(
         if key in dedup_keys:
             drop_reasons.update({"duplicate": 1})
             continue
+
+        if judge is not None:
+            try:
+                verdict = judge.evaluate(record, evidence_spans)
+            except Exception as exc:  # pragma: no cover - defensive around LLM failures
+                logger.warning(
+                    "Judge evaluation failed for %s/%s: %s",
+                    window["window_id"],
+                    record.get("question", ""),
+                    exc,
+                )
+                drop_reasons.update({"judge_error": 1})
+                continue
+            if verdict.error:
+                drop_reasons.update({"judge_error": 1})
+                continue
+            if not verdict.passed:
+                drop_reasons.update({"judge_reject": 1})
+                continue
+
         dedup_keys.add(key)
         record["id"] = _hash_item(
             record["doc_id"],
@@ -256,13 +279,15 @@ def _process_item(
     window: Dict,
     sentence_spans: Sequence[Tuple[int, int]],
     banned_openings: Sequence[str],
+    evidence_spans: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Dict:
     question = item.question.strip()
     answer_text = item.answer_text.strip()
     if not answer_text:
         raise _DropItem("empty_answer")
 
-    evidence_spans = _resolve_evidence_spans(window["window_text"], item.evidence, sentence_spans)
+    if evidence_spans is None:
+        evidence_spans = _resolve_evidence_spans(window["window_text"], item.evidence, sentence_spans)
     span = find_span(window["window_text"], answer_text, evidence_spans)
     if span is None:
         raise _DropItem("alignment_failed")
@@ -347,7 +372,9 @@ def run_synthesis(
     all_items: List[Dict] = []
 
     with VLLMClient(base_url=base_url, api_key=api_key, model=config["model"], timeout_s=timeout_s) as client:
-        worker = lambda w: _process_window(w, client, config, system_prompt, cache_dir, resume)
+        judge = build_judge(config, client)
+
+        worker = lambda w: _process_window(w, client, config, system_prompt, cache_dir, resume, judge)
         if concurrency > 1:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = {executor.submit(worker, window): window for window in windows}

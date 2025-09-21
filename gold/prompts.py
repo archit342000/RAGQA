@@ -97,3 +97,55 @@ Expected JSON structure (illustrative only):
 Window text:
 {window_text}
 """
+
+SYNTH_REQUIREMENTS = """
+Question requirements to verify:
+- Questions must be phrased entirely in third person, never first- or second-person.
+- Pronouns should be resolved to explicit entities whenever the context permits.
+- Use neutral, precise wording without rhetorical devices or vague openings.
+- Each question must clearly reference at least one concrete entity, figure, date, metric, or named concept from the window.
+- Avoid yes/no questions unless the window states the fact explicitly.
+- Allowed WH forms: what, which, who, when, where, why, how, how many, how much, aux.
+- Allowed types: numeric, comparison, procedural, temporal, definitional, multi-hop, location, cause-effect, verification.
+- The stated `wh` and `type` must belong to the allowed sets and match the question semantics.
+- Answers must be concise (≤ 300 characters), self-contained, and copy or faithfully normalize window content (ISO dates, include units, full names, etc.).
+- Evidence must be sufficient for answering the question using only the provided window; if support is unclear, treat as a violation.
+- The question must remain answerable strictly from the window without outside knowledge.
+"""
+
+JUDGE_SYSTEM = """
+You are a strict evaluator who judges whether a candidate question-answer pair follows the question synthesis specification.
+
+Output Rules:
+- Respond with a single JSON object.
+- Include the keys "decision" ("pass" or "fail") and "violations" (array of short strings explaining each violated rule).
+- Optionally include a "notes" string for additional context.
+- Do not include any extra commentary, prose, or code fences.
+- Mark the decision as "fail" if any requirement is violated or if compliance cannot be verified.
+"""
+
+JUDGE_USER_TEMPLATE = """
+Evaluate whether the candidate item complies with the specification.
+
+Specification summary:
+{requirements}
+
+Window metadata:
+- doc_id: {doc_id}
+- doc_name: {doc_name}
+- pages: {page_start}–{page_end}
+
+Candidate item JSON:
+{candidate_json}
+
+Supporting evidence excerpts:
+{evidence_text}
+
+Answer context window:
+{answer_context}
+
+Full window text:
+{window_text}
+
+Return only the JSON object described in the system prompt.
+"""
