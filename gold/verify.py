@@ -18,7 +18,25 @@ ALLOWED_WH = {
     "how",
     "how_many",
     "how_much",
-    "aux",
+}
+
+ALLOWED_TYPES = {
+    "numeric",
+    "comparison",
+    "procedural",
+    "temporal",
+    "definitional",
+    "multi-hop",
+    "location",
+    "cause-effect",
+    "verification",
+}
+
+ALLOWED_EVIDENCE_TYPES = {
+    "sentence",
+    "list_item",
+    "table_cell",
+    "figure_caption",
 }
 
 
@@ -57,13 +75,44 @@ def parse_json_array(text: str) -> List[Any]:
     return data
 
 
+class EvidenceItem(BaseModel):
+    type: str
+    index: int
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("type")
+    @classmethod
+    def _normalize_type(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("evidence.type must be a string")
+        normalized = value.strip().lower()
+        normalized = normalized.replace("-", "_")
+        normalized = re.sub(r"\s+", "_", normalized)
+        if normalized not in ALLOWED_EVIDENCE_TYPES:
+            raise ValueError("unsupported evidence type")
+        return normalized
+
+    @field_validator("index")
+    @classmethod
+    def _validate_index(cls, value: Any) -> int:
+        if isinstance(value, bool):
+            raise ValueError("evidence.index must be an integer")
+        try:
+            index = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evidence.index must be an integer") from exc
+        if index < 0:
+            raise ValueError("evidence.index must be non-negative")
+        return index
+
+
 class SynthItem(BaseModel):
     question: str
     wh: str
     type: str
     answer_text: str
-    evidence: List[dict] = Field(default_factory=list)
-    tags: List[str] = Field(default_factory=list)
+    evidence: List[EvidenceItem] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -79,6 +128,8 @@ class SynthItem(BaseModel):
     def _check_question(cls, value: str) -> str:
         if not value or len(value) > 320:
             raise ValueError("invalid question length")
+        if value.count("?") != 1 or not value.endswith("?"):
+            raise ValueError("question must end with a single question mark")
         return value
 
     @field_validator("wh")
@@ -91,6 +142,17 @@ class SynthItem(BaseModel):
                 raise ValueError("wh must be provided")
         return lowered
 
+    @field_validator("type")
+    @classmethod
+    def _normalize_type(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("type must be a string")
+        lowered = value.strip().lower()
+        normalized = re.sub(r"[\s_]+", "-", lowered)
+        if normalized not in ALLOWED_TYPES:
+            raise ValueError("unsupported question type")
+        return normalized
+
     @field_validator("answer_text")
     @classmethod
     def _check_answer(cls, value: str) -> str:
@@ -98,6 +160,13 @@ class SynthItem(BaseModel):
             raise ValueError("answer_text cannot be empty")
         if len(value) > 300:
             raise ValueError("answer_text too long")
+        return value
+
+    @field_validator("evidence")
+    @classmethod
+    def _check_evidence(cls, value: List[EvidenceItem]) -> List[EvidenceItem]:
+        if not value:
+            raise ValueError("evidence cannot be empty")
         return value
 
 
