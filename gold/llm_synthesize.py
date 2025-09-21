@@ -362,6 +362,9 @@ def run_synthesis(
         "validated_items": 0,
         "kept_items": 0,
         "drop_reasons": Counter(),
+        "wh_counts": Counter(),
+        "type_counts": Counter(),
+        "evidence_type_counts": Counter(),
         "per_doc": defaultdict(lambda: {"windows": 0, "kept": 0}),
         "errors": [],
     }
@@ -418,6 +421,32 @@ def _update_stats(
     stats["validated_items"] += valid_count
     stats["kept_items"] += len(kept)
     stats["drop_reasons"].update(drops)
+    if kept:
+        wh_counts = stats.get("wh_counts")
+        type_counts = stats.get("type_counts")
+        evidence_counts = stats.get("evidence_type_counts")
+        for item in kept:
+            wh_value = (item.get("wh") or "").strip().lower()
+            if not wh_value:
+                wh_value = detect_wh(item.get("question", ""))
+            if wh_counts is not None and wh_value:
+                wh_counts[wh_value] += 1
+
+            q_type = item.get("type") or ""
+            q_type = q_type.strip()
+            if type_counts is not None and q_type:
+                type_counts[q_type] += 1
+
+            if evidence_counts is not None:
+                for ev in item.get("evidence", []) or []:
+                    if isinstance(ev, dict):
+                        ev_type = ev.get("type")
+                    else:
+                        ev_type = None
+                    if isinstance(ev_type, str):
+                        ev_value = ev_type.strip().lower()
+                        if ev_value:
+                            evidence_counts[ev_value] += 1
     doc_stats = stats["per_doc"][window["doc_id"]]
     doc_stats["windows"] += 1
     doc_stats["kept"] += len(kept)

@@ -19,6 +19,38 @@
 }
 ```
 
+## Synthesised LLM candidate (JSON record)
+
+LLM generation returns lightweight dictionaries rather than `CandidateItem`
+instances. They include additional metadata emitted by the prompt schema.
+
+```json
+{
+  "doc_id": "doc-1",
+  "doc_name": "doc-1.pdf",
+  "page_start": 4,
+  "page_end": 4,
+  "window_id": "doc-1:0",
+  "question": "Which component handles nightly backups?",
+  "wh": "which",
+  "type": "procedural",
+  "answer_text": "The storage gateway handles nightly backups.",
+  "evidence": [
+    {"type": "sentence", "index": 2},
+    {"type": "sentence", "index": 3}
+  ],
+  "char_start": 812,
+  "char_end": 870,
+  "tags": [],
+  "window_text": "..."
+}
+```
+
+Each evidence object records the zero-based index of the supporting snippet
+within the window alongside a coarse type hint (`sentence`, `table_cell`,
+`list_item`, or `figure_caption`). Downstream metrics aggregate these `wh`,
+`type`, and evidence-type values to surface prompt compliance statistics.
+
 ## GoldItem (final)
 
 ```json
