@@ -76,8 +76,16 @@ def _get_chunker(model_name: str) -> SemanticChunker:
     """Construct the LangChain ``SemanticChunker`` for the given model."""
     if not _SEMANTIC_AVAILABLE:  # pragma: no cover
         raise RuntimeError("Semantic chunker dependencies are unavailable")
-    embeddings = _get_embeddings(model_name)
-    return SemanticChunker(embeddings)
+    try:
+        embeddings = _get_embeddings(model_name)
+    except Exception as exc:  # pragma: no cover - runtime guard
+        logger.warning("Semantic embedding loader failed: %s", exc)
+        raise
+    try:
+        return SemanticChunker(embeddings)
+    except Exception as exc:  # pragma: no cover - runtime guard
+        logger.warning("Semantic chunker initialisation failed: %s", exc)
+        raise
 
 
 def semantic_segments(text: str, model_name: str, max_sentences: int = 300) -> List[str]:
@@ -98,7 +106,14 @@ def semantic_segments(text: str, model_name: str, max_sentences: int = 300) -> L
     # ``SemanticChunker`` expects LangChain ``Document`` objects and performs
     # sentence-level grouping internally. We feed it the reconstructed sentence
     # list and let the driver decide how to pack the resulting segments.
-    chunker = _get_chunker(model_name)
-    docs = chunker.split_documents([Document(page_content=" ".join(sentences))])
+    try:
+        chunker = _get_chunker(model_name)
+    except Exception:
+        return []
+    try:
+        docs = chunker.split_documents([Document(page_content=" ".join(sentences))])
+    except Exception as exc:  # pragma: no cover - runtime guard
+        logger.warning("Semantic chunker inference failed: %s", exc)
+        return []
     segments = [doc.page_content.strip() for doc in docs if doc.page_content.strip()]
     return segments
