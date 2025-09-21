@@ -17,18 +17,18 @@ import yaml
 from dotenv import load_dotenv
 from tqdm.auto import tqdm
 
-from .align import find_span
-from .llm_client import VLLMClient
-from .prompts import SYNTH_SYSTEM, SYNTH_USER_TEMPLATE
-from .quality import (
+from gold.align import find_span
+from gold.llm_client import VLLMClient
+from gold.prompts import SYNTH_SYSTEM, SYNTH_USER_TEMPLATE
+from gold.quality import (
     detect_wh,
     has_banned_opening,
     is_entity_anchored,
     no_vague_pronoun,
     readability_bounds,
 )
-from .verify import SynthItem, parse_json_array, validate_synth_items
-from .window import make_windows
+from gold.verify import SynthItem, parse_json_array, validate_synth_items
+from gold.window import make_windows
 
 logger = logging.getLogger(__name__)
 

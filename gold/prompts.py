@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 SYNTH_SYSTEM = (
-    "You craft diverse, unambiguous questions answerable solely from the given window. "
-    "Output a JSON array only; no commentary or code fences. "
-    "Each item must contain keys: question, wh, type, answer_text, evidence. "
-    "Do not emit character indices. "
-    "Avoid vague openings and tautologies. "
-    "Include at least one concrete entity or metric from the window in every question. "
-    "Limit the array to at most {max_q} items and keep answer_text ≤ 300 characters."
+    "You generate diverse, unambiguous questions answerable only from the provided window. "
+    "Output strictly a JSON array — no commentary, code fences, or extra text. "
+    "Each object must include: question, wh, type, answer_text, evidence. "
+    "Do not output character indices. "
+    "Avoid vague phrasing and tautologies. "
+    "Every question must cite at least one concrete entity, fact, or metric from the window. "
+    "Limit to {max_q} items; keep answer_text ≤ 300 characters."
 )
 
 SYNTH_USER_TEMPLATE = """
@@ -20,13 +20,13 @@ Document metadata:
 - window_len: {window_len}
 
 Instructions:
-- Generate focused questions that can be answered with evidence contained entirely in this window.
-- Cover a mix of numeric, comparison, procedural, temporal, definitional, and multi-hop (within-window) queries.
-- Diversify WH forms (what/which/who/when/where/why/how/how many/how much) where possible.
-- Produce no more than {max_q} items; respond with [] if nothing fits the criteria.
-- Return a JSON array only; omit trailing text.
+- Generate precise questions that can be answered solely from this window.
+- Cover a variety: numeric, comparison, procedural, temporal, definitional, and multi-hop (within-window).
+- Vary WH forms: what, which, who, when, where, why, how, how many, how much.
+- Produce ≤ {max_q} items; if no valid question exists, return [].
+- Output must be a JSON array only.
 
-Expected JSON structure (pseudo-code example):
+Expected JSON format (illustrative):
 [
   {{
     "question": "Which tier supports SSO and costs under $100?",
@@ -44,8 +44,6 @@ Expected JSON structure (pseudo-code example):
   }}
 ]
 
-window_text:
-```
+Window text:
 {window_text}
-```
 """
