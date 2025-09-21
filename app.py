@@ -345,7 +345,7 @@ def _ensure_retrieval_state(
     return retrieval_state
 
 
-def parse_batch(files, mode_label: str, chunk_mode_label: str):
+def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: bool = False):
     """Handle a UI request to parse documents and emit retrieval chunks."""
 
     # Validate the incoming file list to avoid calling the parser on empty
@@ -489,13 +489,18 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str):
     retrieval_debug_reset = gr.update(value=None, visible=debug_enabled)
     gold_status_reset = gr.update(value="", visible=_gold_export_enabled())
 
-    return (
+    base_outputs = (
         state_payload,
         gr.update(choices=doc_choices, value=default_doc or None),
         gr.update(choices=chunk_choices, value=default_chunk_key or None),
         default_text,
         "\n".join(status_lines),
         debug_update,
+    )
+    if not full_output:
+        return base_outputs
+
+    return base_outputs + (
         retrieval_state,
         engine_dropdown_reset,
         "",
@@ -504,6 +509,12 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str):
         retrieval_debug_reset,
         gold_status_reset,
     )
+
+
+def parse_batch_ui(files, mode_label: str, chunk_mode_label: str):
+    """UI wrapper returning the expanded set of outputs for Gradio."""
+
+    return parse_batch(files, mode_label, chunk_mode_label, full_output=True)
 
 
 def prepare_gold_inputs(state: Dict[str, object]) -> str:
@@ -770,7 +781,7 @@ def build_interface() -> gr.Blocks:
         # UI components (state blobs, dropdown choices, chunk preview panes, and
         # debug outputs).
         parse_button.click(
-            parse_batch,
+            parse_batch_ui,
             inputs=[file_input, mode_input, chunk_mode_input],
             outputs=[
                 state,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+import re
 from typing import Dict, List, Sequence, Tuple
 
 from transformers import AutoTokenizer
@@ -18,6 +19,30 @@ from chunking.types import Block, Chunk
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOKENIZER_NAME = "hf-internal-testing/llama-tokenizer"
+_WORD_PATTERN = re.compile(r"\S+")
+
+
+class _WhitespaceTokenizer:
+    """Lightweight fallback when Hugging Face tokenizers are unavailable."""
+
+    def __init__(self) -> None:
+        self.model_max_length = 16384
+        self.padding_side = "left"
+
+    def __call__(
+        self,
+        text: str,
+        *,
+        add_special_tokens: bool = False,
+        return_attention_mask: bool = False,
+    ) -> Dict[str, List[str]]:
+        tokens = _WORD_PATTERN.findall(text or "")
+        return {"input_ids": tokens}
+
+    def decode(self, token_ids: Sequence[str]) -> str:
+        if not token_ids:
+            return ""
+        return " ".join(str(token) for token in token_ids if str(token))
 
 
 @lru_cache(maxsize=2)
@@ -27,7 +52,14 @@ def get_tokenizer(model_name: str | None = None):
     # Allow deployments to override the tokenizer, but fall back to the
     # lightweight internal llama tokenizer for CPU-only Spaces.
     name = model_name or DEFAULT_TOKENIZER_NAME
-    tokenizer = AutoTokenizer.from_pretrained(name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(name, local_files_only=True)
+    except Exception:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(name)
+        except Exception as exc:  # pragma: no cover - fallback path
+            logger.warning("Falling back to whitespace tokenizer for %s: %s", name, exc)
+            return _WhitespaceTokenizer()
     tokenizer.model_max_length = 16384
     tokenizer.padding_side = "left"
     return tokenizer
@@ -77,7 +109,53 @@ def pack_blocks(
             buffer_token_len = 0
             return
         full_ids, full_len = _encode(chunk_text, tokenizer)
-        if full_len == 0 or chunk_text in seen_texts:
+        if full_len == 0:
+            buffer = []
+            buffer_token_ids = []
+            buffer_token_len = 0
+            return
+        if max_tokens > 0 and full_len > max_tokens:
+            stride = max_tokens - overlap_tokens if overlap_tokens and overlap_tokens < max_tokens else max_tokens
+            stride = max(1, stride)
+            start_idx = 0
+            page_start = min(b.page_num for b in buffer)
+            page_end = max(b.page_num for b in buffer)
+            block_types = sorted({b.kind for b in buffer})
+            heading = next((b.text for b in buffer if b.kind == "heading"), None)
+            meta_template: Dict[str, str] = {
+                "block_types": ",".join(block_types),
+                "strategy": strategy_label,
+            }
+            while start_idx < full_len:
+                end_idx = min(start_idx + max_tokens, full_len)
+                window_ids = full_ids[start_idx:end_idx]
+                window_text = tokenizer.decode(window_ids).strip()
+                if not window_text:
+                    start_idx += stride
+                    continue
+                if window_text in seen_texts:
+                    start_idx += stride
+                    continue
+                seen_texts.add(window_text)
+                chunks.append(
+                    Chunk(
+                        doc_id=buffer[0].doc_id,
+                        doc_name=buffer[0].doc_name,
+                        page_start=page_start,
+                        page_end=page_end,
+                        section_title=heading,
+                        text=window_text,
+                        token_len=len(window_ids),
+                        meta=dict(meta_template),
+                    )
+                )
+                start_idx += stride
+            buffer = []
+            buffer_token_ids = []
+            buffer_token_len = 0
+            return
+
+        if chunk_text in seen_texts:
             buffer = []
             buffer_token_ids = []
             buffer_token_len = 0
