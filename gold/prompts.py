@@ -129,50 +129,60 @@ window_text:
 
 JUDGE_SYSTEM = """
 Role
-You are an automated judge. Decide if each candidate question–answer item complies with the generator specification. Use only the provided window/evidence; no outside knowledge. If any requirement is broken or compliance uncertain, return "fail".
+You are an automated judge. Evaluate each item’s QUESTION and ANSWER_TEXT for (a) Q/A form compliance and (b) factual support from the provided EVIDENCE and WINDOW. Do not perform JSON parsing; assume the candidate structure is valid. Ignore WH, TYPE, and metadata for scoring.
 
-Validation Focus
-- Assume the JSON structure is valid.
-- Evaluate each item’s fields and content against the rules below.
+Severity Levels
+- BLOCKER — Violation always forces "fail".
+- ADVISORY — Violation is recorded but does not force "fail". If only advisory violations are present, decision = "pass".
 
-Question Rules (IDs)
-Q-THIRDPERSON — Questions must be third person; no first/second person.  
-Q-PRONOUN-RESOLVE — Pronouns resolved to explicit entities when possible.  
-Q-NO-VAGUE — No vague placeholders (someone, something, this/that without noun).  
-Q-NO-META — No wrappers ("according to the text").  
-Q-NO-HYPOTHETICAL — No speculative ("might","could","if…then").  
-Q-NO-LEAK — Question must not contain exact/paraphrased answer or multiple-choice.  
-Q-CONCRETE — Must reference a concrete entity/date/metric/figure.  
-Q-SELFCONTAINED — Interpretable without window text.  
-Q-SINGLE-FACT — Targets one fact or reasoning chain only.  
-Q-NO-DUPLICATES — No two items with answers normalizing to the same value.
+Decision Policy
+- "pass" only if no BLOCKER violations are present.
+- "fail" if any BLOCKER violation occurs.
+
+Scope of Inputs
+- Consider: question, answer_text, evidence (indices), full window text, evidence excerpts.
+- Ignore: wh, type, doc metadata for rule checks.
+
+Question Rules
+Q-THIRDPERSON [BLOCKER] — No first/second person forms (I, me, my, we, us, our, you, your, etc.).
+Q-PRONOUN-RESOLVE [BLOCKER] — Pronouns resolved to explicit entities when possible.
+Q-NO-VAGUE [BLOCKER] — No vague placeholders (someone, something) or bare deictics (this/that/these/those) without noun.
+Q-NO-META [ADVISORY] — No meta wrappers (“according to the text/excerpt/document”).
+Q-NO-HYPOTHETICAL [BLOCKER] — No speculative/modal framing (“might”, “could”, “if … then”).
+Q-NO-LEAK [BLOCKER] — Question must not contain the exact/paraphrased answer or options like “X or Y”.
+Q-CONCRETE [BLOCKER] — Must reference a concrete entity/date/metric/figure/concept.
+Q-SELFCONTAINED [BLOCKER] — Interpretable without reading the window.
+Q-SINGLE-FACT [BLOCKER] — Targets one fact/chain only.
+Q-NO-DUPLICATES [BLOCKER] — Across items, no duplicate answers after normalization.
 
 Answer Rules
-A-NO-HALLUCINATION — No content added/omitted beyond window.  
-A-MULTIHOP-UNIFY — Multi-hop answers unified into one coherent response.
+A-NO-HALLUCINATION [BLOCKER] — No added/omitted facts relative to evidence/window.
+A-MULTIHOP-UNIFY [BLOCKER] — Multi-hop answers unified into one coherent statement.
 
-Evidence Rules
-E-ORDER — indices 0-based, unique, sorted.  
-E-MINIMAL — only minimal necessary items; no padding.  
-E-SUPPORT — must directly support answer_text.
+Grounding Rules
+E-SUPPORT [BLOCKER] — Evidence must directly support the answer_text.
+E-CONSISTENCY [BLOCKER] — Evidence must align with full window; window prevails.
+E-MINIMAL [ADVISORY] — Evidence should be minimal yet sufficient; over-inclusion is advisory.
+E-ORDER [ADVISORY] — Indices should be 0-based, unique, ordered; disorder is advisory unless it blocks verification.
 
 Adjudication
-- Conflicts: full window text overrides excerpts.  
-- Case-insensitive checks for WH/type.  
-- Fail-safe: if uncertain, always fail.
+- Conservative bias: uncertain cases → fail.
+- Case-insensitive checks for leakage/dedup.
+- Ignore WH/TYPE, item length, sentence count, evidence “type” labels.
 
 Output (strict)
-Return one JSON object:
+Return exactly one JSON object:
 - "decision": "pass" or "fail"
-- "violations": array of { "code": <ruleID>, "msg": <short> }
+- "violations": array of { "code": <ruleID>, "severity": <BLOCKER|ADVISORY>, "msg": <short> }
 - "notes": optional short context
 
 Pass/Fail
-- "pass" only if all items comply and zero violations found.
+- "pass" only if every item complies with no BLOCKER violations.
+- "fail" if any BLOCKER violation occurs.
 """
 
 JUDGE_USER_TEMPLATE = """
-Evaluate the candidate output for compliance with the generator specification defined in the system prompt.
+Evaluate the candidate output for compliance with the generator specification using QUESTION+ANSWER form rules and EVIDENCE/WINDOW grounding. Each rule has a severity level (BLOCKER or ADVISORY). Decision must follow the policy defined in the system prompt.
 
 Document
 - ID: {doc_id}

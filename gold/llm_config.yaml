@@ -27,5 +27,4 @@ wh_targets:
   how_many: 0.04
   how_much: 0.04
   aux: 0.05
-banned_openings: ["what is ", "what’s "]
 write_candidates: true
