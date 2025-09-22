@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import orjson
 
 from .llm_client import VLLMClient
 from .prompts import JUDGE_SYSTEM, JUDGE_USER_TEMPLATE
+from .spans import resolve_evidence_spans as _resolve_evidence_spans
+from .spans import sentence_spans as _sentence_spans
 
 
 def _escape_braces(text: str) -> str:
@@ -25,15 +27,38 @@ def _format_template(template: str, **values) -> str:
     return template.format(**safe_values)
 
 
-def _summarize_evidence(window_text: str, spans: Sequence[Tuple[int, int]]) -> str:
+def _render_snippets(window_text: str, spans: Sequence[Tuple[int, int]]) -> List[str]:
+    text_len = len(window_text)
+    seen: set[Tuple[int, int]] = set()
     snippets: List[str] = []
-    for idx, (start, end) in enumerate(spans, start=1):
-        start = max(0, min(len(window_text), start))
-        end = max(start, min(len(window_text), end))
+
+    for start, end in spans:
+        start = max(0, min(text_len, start))
+        end = max(start, min(text_len, end))
+        key = (start, end)
+        if key in seen or start >= end:
+            continue
         snippet = window_text[start:end].strip()
         if not snippet:
             continue
-        snippets.append(f"{idx}. {snippet}")
+        seen.add(key)
+        snippets.append(snippet)
+
+    return [f"{idx}. {snippet}" for idx, snippet in enumerate(snippets, start=1)]
+
+
+def _summarize_evidence(
+    window_text: str,
+    evidence_entries: Optional[Sequence[Any]],
+    fallback_spans: Optional[Sequence[Tuple[int, int]]] = None,
+) -> str:
+    sentence_bounds = _sentence_spans(window_text)
+    spans = _resolve_evidence_spans(evidence_entries or [], sentence_bounds)
+    snippets = _render_snippets(window_text, spans)
+
+    if not snippets and fallback_spans:
+        snippets = _render_snippets(window_text, fallback_spans)
+
     if not snippets:
         return "No evidence snippets available."
     return "\n".join(snippets)
@@ -67,7 +92,11 @@ class LLMJudge:
         self.seed = seed
         self.requirements = requirements
 
-    def evaluate(self, record: Dict, evidence_spans: Sequence[Tuple[int, int]]) -> JudgeVerdict:
+    def evaluate(
+        self,
+        record: Dict,
+        evidence_spans: Optional[Sequence[Tuple[int, int]]] = None,
+    ) -> JudgeVerdict:
         window_text = record.get("window_text", "")
         candidate_payload = {
             "doc_id": record.get("doc_id"),
@@ -82,7 +111,11 @@ class LLMJudge:
             "evidence": record.get("evidence", []),
         }
         candidate_json = orjson.dumps(candidate_payload, option=orjson.OPT_INDENT_2).decode("utf-8")
-        evidence_text = _summarize_evidence(window_text, evidence_spans)
+        evidence_text = _summarize_evidence(
+            window_text,
+            candidate_payload.get("evidence") or [],
+            evidence_spans,
+        )
         user_prompt = _format_template(
             JUDGE_USER_TEMPLATE,
             requirements=self.requirements,

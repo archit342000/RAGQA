@@ -20,9 +20,9 @@ from tqdm.auto import tqdm
 from gold.llm_client import VLLMClient
 from gold.prompts import SYNTH_SYSTEM, SYNTH_USER_TEMPLATE
 from gold.quality import detect_wh
+from gold.spans import resolve_evidence_spans, sentence_spans as compute_sentence_spans
 from gold.verify import (
     ALLOWED_WH,
-    EvidenceItem,
     SynthItem,
     canonicalize_wh,
     parse_json_array,
@@ -45,47 +45,11 @@ def _iter_parsed_docs(parsed_dir: Path) -> Iterable[Dict]:
             yield orjson.loads(fh.read())
 
 
-_SENTENCE_REGEX = re.compile(r"[^.!?\n]+(?:[.!?]+|\n+|$)")
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
 
 def _normalize(text: str) -> str:
     return " ".join(text.lower().split())
-
-
-def _sentence_spans(text: str) -> List[Tuple[int, int]]:
-    spans: List[Tuple[int, int]] = []
-    for match in _SENTENCE_REGEX.finditer(text):
-        start, end = match.span()
-        snippet = text[start:end].strip()
-        if not snippet:
-            continue
-        while start < end and text[start].isspace():
-            start += 1
-        while end > start and text[end - 1].isspace():
-            end -= 1
-        if start < end:
-            spans.append((start, end))
-    return spans
-
-
-def _resolve_evidence_spans(
-    evidence: Sequence[EvidenceItem],
-    sentence_spans: Sequence[Tuple[int, int]],
-) -> List[Tuple[int, int]]:
-    spans: List[Tuple[int, int]] = []
-    for entry in evidence:
-        idx = entry.index
-        if 0 <= idx < len(sentence_spans):
-            spans.append(sentence_spans[idx])
-    deduped: List[Tuple[int, int]] = []
-    seen: set[Tuple[int, int]] = set()
-    for start, end in spans:
-        key = (start, end)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(key)
-    return deduped
 
 
 def _prompt_hash(payload: dict) -> str:
@@ -214,15 +178,15 @@ def _process_window(
     if not valid_items:
         return [], drop_reasons, raw_count, 0, None
 
-    sentence_spans = _sentence_spans(window["window_text"])
+    sentence_spans_list = compute_sentence_spans(window["window_text"])
     kept: List[Dict] = []
     seen_questions: set[str] = set()
     seen_answers: set[str] = set()
 
     for item in valid_items:
-        evidence_spans = _resolve_evidence_spans(item.evidence, sentence_spans)
+        evidence_spans = resolve_evidence_spans(item.evidence, sentence_spans_list)
         try:
-            record = _process_item(item, window, sentence_spans, evidence_spans)
+            record = _process_item(item, window, sentence_spans_list, evidence_spans)
         except _DropItem as drop:
             drop_reasons.update({drop.reason: 1})
             continue
@@ -297,7 +261,7 @@ def _process_item(
         raise _DropItem("evidence_unsorted")
 
     if evidence_spans is None:
-        evidence_spans = _resolve_evidence_spans(item.evidence, sentence_spans)
+        evidence_spans = resolve_evidence_spans(item.evidence, sentence_spans)
     if not evidence_spans:
         raise _DropItem("evidence_alignment_failed")
     question_lower = question.lower()
