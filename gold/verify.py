@@ -114,12 +114,7 @@ _ROMAN_NUMERAL_LEADERS = {
     "table",
     "title",
 }
-_VAGUE_PLACEHOLDER_RE = re.compile(r"\b(?:someone|somebody|something)\b", re.IGNORECASE)
-_META_WRAPPER_RE = re.compile(
-    r"\baccording to\s+(?:the\s+|this\s+|that\s+)?"
-    r"(?:text|document|passage|excerpt|article|window|section)\b",
-    re.IGNORECASE,
-)
+
 
 
 def _tokenize_question(text: str) -> List[str]:
@@ -208,12 +203,7 @@ class SynthItem(BaseModel):
             raise ValueError("question must end with a single question mark")
         normalized = value.strip()
         if _violates_person_rules(normalized):
-            raise ValueError("question must be written in third person")
-        lowered = normalized.lower()
-        if _VAGUE_PLACEHOLDER_RE.search(lowered):
-            raise ValueError("question must avoid vague placeholders")
-        if _META_WRAPPER_RE.search(lowered):
-            raise ValueError("question must not reference the prompt meta")
+            raise ValueError("question must be written in third person")git
         return value
 
     @field_validator("wh")
