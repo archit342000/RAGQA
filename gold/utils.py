@@ -231,7 +231,10 @@ def dedupe_candidates(items: List[CandidateItem], per_page_limit: int) -> List[C
 # Slot extraction ------------------------------------------------------------
 
 def _nearest_heading(page_text: str, char_start: int) -> str:
-    prefix = page_text[:char_start]
+    if char_start is None or char_start < 0:
+        prefix = page_text
+    else:
+        prefix = page_text[:char_start]
     for line in reversed(prefix.splitlines()):
         candidate = line.strip()
         if HEADING_RE.match(candidate):
