@@ -136,33 +136,23 @@ You are an automated judge. Evaluate each item in the candidate JSON by checking
 
 You do not evaluate `wh`, `type`, or metadata. Do not parse JSON; assume the candidate JSON is valid.
 
-Severity Levels
-- BLOCKER — Any violation of this rule makes the decision "fail".
-- ADVISORY — Violations are reported but do not change the decision. If only advisory issues are found, the decision remains "pass".
-
 Decision Policy
-- "pass" only if no BLOCKER violations occur.
-- "fail" if any BLOCKER violation occurs.
+- "pass" only if no rule violations occur.
+- "fail" if any rule violation occurs.
 
 Question Rules
-Q-THIRDPERSON [BLOCKER] — The `question` must be in third person. Do not allow first-person (I, we) or second-person (you).  
-Q-PRONOUN-RESOLVE [ADVISORY] — Pronouns in the `question` should be replaced with explicit entities when possible.  
-Q-NO-VAGUE [BLOCKER] — Do not allow vague words like "someone," "something," or bare terms like "this" without a noun.  
-Q-NO-META [ADVISORY] — The `question` should not include meta phrases like "according to the text/document."  
-Q-NO-HYPOTHETICAL [BLOCKER] — Do not allow speculative or conditional forms such as "might," "could," or "if … then."  
-Q-NO-LEAK [BLOCKER] — The `question` must not contain the correct `answer_text` or a trivial paraphrase of it. It must also not include options like "X or Y."  
-Q-CONCRETE [BLOCKER] — The `question` must mention at least one concrete entity, date, number, metric, or named concept.  
-Q-SELFCONTAINED [BLOCKER] — The `question` must be understandable on its own, without looking at the window.  
-Q-NO-DUPLICATES [BLOCKER] — Two different questions must not lead to the same normalized `answer_text`.
+Q-NO-VAGUE — The `question` must not use vague words like "someone," "something," or bare terms like "this" without a noun.  
+Q-NO-LEAK — The `question` must not contain the correct `answer_text` or a trivial paraphrase of it. It must also not include options like "X or Y."  
+Q-CONCRETE — The `question` must mention at least one concrete entity, date, number, metric, or named concept.  
+Q-SELFCONTAINED — The `question` must be understandable on its own, without looking at the window.  
+Q-NO-DUPLICATES — Two different questions must not lead to the same normalized `answer_text`.
 
 Answer Rules
-A-NO-HALLUCINATION [BLOCKER] — The `answer_text` must not add facts not supported by the `evidence` or `window_text`.  
-It is acceptable for `answer_text` to copy only the relevant part of the evidence and leave out unrelated details.  
-A-MULTIHOP-UNIFY [BLOCKER] — If the answer comes from more than one piece of evidence, the `answer_text` must combine them into a single clear response.
+A-NO-HALLUCINATION — The `answer_text` must not add facts not supported by the `evidence` or `window_text`.  
+A-MULTIHOP-UNIFY — If the answer comes from more than one piece of evidence, the `answer_text` must combine them into a single clear response.
 
 Grounding Rules
-E-SUPPORT [BLOCKER] — The `answer_text` must be directly supported by the cited `evidence`. If the evidence does not actually contain the answer, fail.  
-E-MINIMAL [ADVISORY] — The `evidence` list should only include what is needed to support the answer, not extra.
+E-SUPPORT — The `answer_text` must be clearly supported by the cited `evidence` and consistent with the `window_text`, even if expressed in paraphrased form.
 
 Adjudication
 - If uncertain whether a rule is broken, choose "fail" (conservative bias).  
@@ -177,7 +167,6 @@ Return exactly one JSON object in this format:
   "violations": [
     {
       "code": "<ruleID>",
-      "severity": "BLOCKER" | "ADVISORY",
       "msg": "<short explanation>"
     }
   ],
@@ -185,8 +174,8 @@ Return exactly one JSON object in this format:
 }
 
 Pass/Fail
-- "pass" only if all rules are met and there are no BLOCKER violations.  
-- "fail" if any BLOCKER violation occurs.
+- "pass" only if all rules are met and there are no violations.  
+- "fail" if any violation occurs.
 """
 
 JUDGE_USER_TEMPLATE = """

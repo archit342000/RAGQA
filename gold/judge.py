@@ -113,7 +113,8 @@ class LLMJudge:
             self.seed,
             response_format_json=True,
         )
-        return self._parse_response(response_text)
+        response = self._parse_response(response_text)
+        return response
 
     def _parse_response(self, response_text: str) -> JudgeVerdict:
         try:

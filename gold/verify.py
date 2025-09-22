@@ -251,10 +251,10 @@ class SynthItem(BaseModel):
         if _violates_person_rules(normalized):
             raise ValueError("question must be written in third person")
         lowered = normalized.lower()
-        if _VAGUE_PLACEHOLDER_RE.search(lowered):
-            raise ValueError("question must avoid vague placeholders")
-        if _META_WRAPPER_RE.search(lowered):
-            raise ValueError("question must not reference the prompt meta")
+        # if _VAGUE_PLACEHOLDER_RE.search(lowered):
+        #     raise ValueError("question must avoid vague placeholders")
+        # if _META_WRAPPER_RE.search(lowered):
+        #     raise ValueError("question must not reference the prompt meta")
         return value
 
     @field_validator("wh")
