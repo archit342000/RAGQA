@@ -39,6 +39,123 @@ ALLOWED_EVIDENCE_TYPES = {
     "figure_caption",
 }
 
+_FIRST_PERSON_TOKENS = {"me", "my", "mine", "myself", "we", "us", "our", "ours", "ourselves"}
+_SECOND_PERSON_TOKENS = {"you", "your", "yours", "yourself", "yourselves"}
+_FIRST_PERSON_CONTRACTIONS = {"i'm", "i'd", "i'll", "i've", "we're", "we'd", "we'll", "we've"}
+_SECOND_PERSON_CONTRACTIONS = {"you're", "you'd", "you'll", "you've"}
+_FIRST_PERSON_LEADERS = {
+    "am",
+    "are",
+    "is",
+    "was",
+    "were",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "may",
+    "might",
+    "must",
+    "should",
+    "would",
+    "will",
+    "shall",
+    "need",
+    "want",
+    "think",
+    "believe",
+    "feel",
+    "see",
+    "understand",
+    "expect",
+    "prefer",
+    "plan",
+}
+_FIRST_PERSON_FOLLOWERS = {
+    "am",
+    "are",
+    "is",
+    "was",
+    "were",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "may",
+    "might",
+    "must",
+    "should",
+    "would",
+    "will",
+    "shall",
+    "need",
+    "want",
+    "think",
+    "believe",
+    "feel",
+    "see",
+    "understand",
+    "expect",
+    "prefer",
+    "plan",
+}
+_ROMAN_NUMERAL_LEADERS = {
+    "annex",
+    "appendix",
+    "article",
+    "chapter",
+    "figure",
+    "part",
+    "phase",
+    "plan",
+    "section",
+    "subsection",
+    "table",
+    "title",
+}
+_VAGUE_PLACEHOLDER_RE = re.compile(r"\b(?:someone|somebody|something)\b", re.IGNORECASE)
+_META_WRAPPER_RE = re.compile(
+    r"\baccording to\s+(?:the\s+|this\s+|that\s+)?"
+    r"(?:text|document|passage|excerpt|article|window|section)\b",
+    re.IGNORECASE,
+)
+
+
+def _tokenize_question(text: str) -> List[str]:
+    return re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text.lower())
+
+
+def _violates_person_rules(question: str) -> bool:
+    tokens = _tokenize_question(question)
+    if not tokens:
+        return False
+    for token in tokens:
+        if (
+            token in _FIRST_PERSON_TOKENS
+            or token in _SECOND_PERSON_TOKENS
+            or token in _FIRST_PERSON_CONTRACTIONS
+            or token in _SECOND_PERSON_CONTRACTIONS
+        ):
+            return True
+    for idx, token in enumerate(tokens[:-1]):
+        next_token = tokens[idx + 1]
+        if token in _FIRST_PERSON_LEADERS and next_token == "i":
+            return True
+        if token == "i" and next_token in _FIRST_PERSON_FOLLOWERS:
+            prev_token = tokens[idx - 1] if idx > 0 else ""
+            if prev_token in _ROMAN_NUMERAL_LEADERS:
+                continue
+            return True
+    return False
+
 
 def canonicalize_wh(value: str) -> str:
     """Normalize WH values emitted by the LLM prompt."""
@@ -130,6 +247,14 @@ class SynthItem(BaseModel):
             raise ValueError("invalid question length")
         if value.count("?") != 1 or not value.endswith("?"):
             raise ValueError("question must end with a single question mark")
+        normalized = value.strip()
+        if _violates_person_rules(normalized):
+            raise ValueError("question must be written in third person")
+        lowered = normalized.lower()
+        if _VAGUE_PLACEHOLDER_RE.search(lowered):
+            raise ValueError("question must avoid vague placeholders")
+        if _META_WRAPPER_RE.search(lowered):
+            raise ValueError("question must not reference the prompt meta")
         return value
 
     @field_validator("wh")
