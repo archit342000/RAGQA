@@ -147,6 +147,10 @@ class LLMJudge:
             response_format_json=True,
         )
         response = self._parse_response(response_text)
+        
+        # Temp
+        print(user_prompt)
+
         return response
 
     def _parse_response(self, response_text: str) -> JudgeVerdict:

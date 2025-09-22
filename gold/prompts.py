@@ -19,7 +19,7 @@ Output:
       "wh": <string>,
       "type": <string>,
       "answer_text": <string>,
-      "evidence": [ { "type": <string>, "index": <int> } ]
+      "evidence": [ <string>, <string>, ... ]
     }
   ]
 
@@ -74,13 +74,15 @@ Answer normalization:
 - If the window defines an acronym, use the expanded form at first mention (optionally add the acronym in parentheses).
 - If information is ambiguous, copy text verbatim without guessing.
 
-Evidence:
-- Evidence indices must be numeric, 0-based, unique within the item, listed in textual order, and fall within the window bounds.
-- Each evidence item must directly support the answer; include one per hop and exclude unused items.
-- Evidence may span multiple sentences or non-contiguous parts of the window when needed for multi-hop reasoning.
-- For multi-hop questions, evidence must include only the minimal items required for the reasoning chain; avoid padding.
-- Multi-sentence/multi-part evidence is encouraged when it enables richer, natural questions, but should remain minimal and directly relevant.
-- Allowed types: sentence, list_item, table_cell, figure_caption.
+Evidence rules:
+- Evidence must consist of direct verbatim excerpts copied from the window text.
+- Absolutely no rephrasing, paraphrasing, summarizing, or editing of evidence text is allowed.
+- Each excerpt must be the smallest span that fully supports the answer (e.g., a sentence, clause, or list item).
+- Evidence may span multiple sentences or non-contiguous parts of the window when the answer requires multi-hop reasoning.
+- For multi-hop, include only the minimal set of excerpts required to support the reasoning chain; do not pad with extra text.
+- List evidence excerpts in the same order they appear in the window.
+- Do not include entire paragraphs unless every sentence is directly needed for the answer.
+- If no verbatim supporting text exists in the window, do not fabricate evidence — drop the question instead.
 
 Limits:
 - ≤ {max_q} items.
@@ -101,6 +103,7 @@ Instructions:
 - Diversify WH forms (what/which/who/when/where/why/how/how many/how much) where possible.
 - Produce no more than {max_q} items; respond with [] if nothing fits the criteria.
 - Questions must be phrased in third person and be self-contained, without vague references or answer leakage.
+- Evidence must consist of direct verbatim excerpts copied from the window text (never rephrased or paraphrased).
 - Evidence can span multiple sentences or even non-contiguous parts of the text when needed for multi-hop questions.
 - Encourage some multi-hop questions if the window supports it, but keep phrasing natural and concise.
 - Return a JSON array only; omit trailing text.
@@ -112,14 +115,14 @@ Expected JSON structure (pseudo-code example):
     "wh": "which",
     "type": "comparison",
     "answer_text": "Basic Plus",
-    "evidence": [{"type": "sentence", "index": 7}]
+    "evidence": ["The Basic Plus tier includes SSO and is priced at $99."]
   },
   {
     "question": "When did the retention policy change take effect?",
     "wh": "when",
     "type": "temporal",
     "answer_text": "March 1, 2024",
-    "evidence": [{"type": "sentence", "index": 3}]
+    "evidence": ["The retention policy was updated to take effect on March 1, 2024."]
   }
 ]
 

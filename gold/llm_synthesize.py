@@ -165,6 +165,9 @@ def _process_window(
     except ValueError:
         logger.warning("JSON parse failed for %s; skipping window", window["window_id"])
         return [], Counter({"parse_error": 1}), 0, 0, "parse_error"
+    
+    # Temp
+    print(raw_items)
 
     raw_count = len(raw_items)
     valid_items = validate_synth_items(raw_items)
@@ -202,6 +205,12 @@ def _process_window(
         if judge is not None:
             try:
                 verdict = judge.evaluate(record, evidence_spans)
+
+                # Temp
+                print(item)
+                print(verdict)
+                print(record)
+                
             except Exception as exc:  # pragma: no cover - defensive around LLM failures
                 logger.warning(
                     "Judge evaluation failed for %s/%s: %s",
