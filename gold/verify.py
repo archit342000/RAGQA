@@ -203,7 +203,7 @@ class SynthItem(BaseModel):
             raise ValueError("question must end with a single question mark")
         normalized = value.strip()
         if _violates_person_rules(normalized):
-            raise ValueError("question must be written in third person")git
+            raise ValueError("question must be written in third person")
         return value
 
     @field_validator("wh")

@@ -11,6 +11,7 @@ from .llm_client import VLLMClient
 from .prompts import JUDGE_SYSTEM, JUDGE_USER_TEMPLATE
 from .spans import resolve_evidence_spans as _resolve_evidence_spans
 from .spans import sentence_spans as _sentence_spans
+import re
 
 
 def _escape_braces(text: str) -> str:
@@ -158,14 +159,22 @@ class LLMJudge:
             self.seed,
             response_format_json=True,
         )
+
         response = self._parse_response(response_text)
         
-        # Temp
-        print(user_prompt)
-
         return response
 
     def _parse_response(self, response_text: str) -> JudgeVerdict:
+
+        def _strip_code_fences(text: str) -> str:
+            text = text.strip()
+            if text.startswith("```") and text.endswith("```"):
+                text = re.sub(r"^```[a-zA-Z0-9]*", "", text, count=1).strip()
+                text = re.sub(r"```$", "", text).strip()
+            return text
+
+        response_text = _strip_code_fences(response_text)
+
         try:
             data = orjson.loads(response_text)
         except orjson.JSONDecodeError:

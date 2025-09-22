@@ -74,7 +74,7 @@ class VLLMClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self._client.post(self._endpoint, json=payload)
+                response = self._client.post(self._endpoint, json=payload, timeout = 180)
             except httpx.HTTPError as exc:
                 logger.warning(
                     "LLM request failed on attempt %d/%d: %s",
