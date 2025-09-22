@@ -32,13 +32,6 @@ ALLOWED_TYPES = {
     "verification",
 }
 
-ALLOWED_EVIDENCE_TYPES = {
-    "sentence",
-    "list_item",
-    "table_cell",
-    "figure_caption",
-}
-
 _FIRST_PERSON_TOKENS = {"me", "my", "mine", "myself", "we", "us", "our", "ours", "ourselves"}
 _SECOND_PERSON_TOKENS = {"you", "your", "yours", "yourself", "yourselves"}
 _FIRST_PERSON_CONTRACTIONS = {"i'm", "i'd", "i'll", "i've", "we're", "we'd", "we'll", "we've"}
@@ -190,46 +183,12 @@ def parse_json_array(text: str) -> List[Any]:
     if not isinstance(data, list):
         raise ValueError("Expected a JSON array")
     return data
-
-
-class EvidenceItem(BaseModel):
-    type: str
-    index: int
-
-    model_config = {"extra": "forbid"}
-
-    @field_validator("type")
-    @classmethod
-    def _normalize_type(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("evidence.type must be a string")
-        normalized = value.strip().lower()
-        normalized = normalized.replace("-", "_")
-        normalized = re.sub(r"\s+", "_", normalized)
-        if normalized not in ALLOWED_EVIDENCE_TYPES:
-            raise ValueError("unsupported evidence type")
-        return normalized
-
-    @field_validator("index")
-    @classmethod
-    def _validate_index(cls, value: Any) -> int:
-        if isinstance(value, bool):
-            raise ValueError("evidence.index must be an integer")
-        try:
-            index = int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("evidence.index must be an integer") from exc
-        if index < 0:
-            raise ValueError("evidence.index must be non-negative")
-        return index
-
-
 class SynthItem(BaseModel):
     question: str
     wh: str
     type: str
     answer_text: str
-    evidence: List[EvidenceItem] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -251,10 +210,10 @@ class SynthItem(BaseModel):
         if _violates_person_rules(normalized):
             raise ValueError("question must be written in third person")
         lowered = normalized.lower()
-        # if _VAGUE_PLACEHOLDER_RE.search(lowered):
-        #     raise ValueError("question must avoid vague placeholders")
-        # if _META_WRAPPER_RE.search(lowered):
-        #     raise ValueError("question must not reference the prompt meta")
+        if _VAGUE_PLACEHOLDER_RE.search(lowered):
+            raise ValueError("question must avoid vague placeholders")
+        if _META_WRAPPER_RE.search(lowered):
+            raise ValueError("question must not reference the prompt meta")
         return value
 
     @field_validator("wh")
@@ -287,9 +246,36 @@ class SynthItem(BaseModel):
             raise ValueError("answer_text too long")
         return value
 
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _normalize_evidence(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("evidence must be an array of strings")
+        normalized: List[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                text = entry.strip()
+            elif isinstance(entry, dict):
+                text_value = entry.get("text") or entry.get("snippet")
+                if not isinstance(text_value, str):
+                    raise ValueError("evidence entries must be strings")
+                text = text_value.strip()
+            else:
+                text_value = getattr(entry, "text", None)
+                if isinstance(text_value, str):
+                    text = text_value.strip()
+                else:
+                    raise ValueError("evidence entries must be strings")
+            if not text:
+                raise ValueError("evidence entries cannot be empty")
+            normalized.append(text)
+        return normalized
+
     @field_validator("evidence")
     @classmethod
-    def _check_evidence(cls, value: List[EvidenceItem]) -> List[EvidenceItem]:
+    def _check_evidence(cls, value: List[str]) -> List[str]:
         if not value:
             raise ValueError("evidence cannot be empty")
         return value

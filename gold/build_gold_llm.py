@@ -74,14 +74,16 @@ def _write_stats(
         counts: Counter[str] = Counter()
         for item in items:
             for entry in item.get("evidence", []) or []:
+                if isinstance(entry, str):
+                    if entry.strip():
+                        counts["text"] += 1
+                    continue
                 if isinstance(entry, dict):
                     ev_type = entry.get("type")
-                else:
-                    ev_type = None
-                if isinstance(ev_type, str):
-                    ev_value = ev_type.strip().lower()
-                    if ev_value:
-                        counts[ev_value] += 1
+                    if isinstance(ev_type, str):
+                        ev_value = ev_type.strip().lower()
+                        if ev_value:
+                            counts[ev_value] += 1
         return counts
 
     candidate_evidence = _evidence_counter(candidates)

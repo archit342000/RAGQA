@@ -53,11 +53,23 @@ def _summarize_evidence(
     fallback_spans: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> str:
     sentence_bounds = _sentence_spans(window_text)
-    spans = _resolve_evidence_spans(evidence_entries or [], sentence_bounds)
+    spans = _resolve_evidence_spans(evidence_entries or [], sentence_bounds, window_text)
     snippets = _render_snippets(window_text, spans)
 
     if not snippets and fallback_spans:
         snippets = _render_snippets(window_text, fallback_spans)
+
+    if not snippets and evidence_entries:
+        raw_lines = []
+        for idx, entry in enumerate(evidence_entries, start=1):
+            if isinstance(entry, str):
+                text = entry.strip()
+            else:
+                text = ""
+            if text:
+                raw_lines.append(f"{idx}. {text}")
+        if raw_lines:
+            snippets = raw_lines
 
     if not snippets:
         return "No evidence snippets available."

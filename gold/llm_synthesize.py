@@ -186,8 +186,10 @@ def _process_window(
     seen_questions: set[str] = set()
     seen_answers: set[str] = set()
 
+    window_text = window["window_text"]
+
     for item in valid_items:
-        evidence_spans = resolve_evidence_spans(item.evidence, sentence_spans_list)
+        evidence_spans = resolve_evidence_spans(item.evidence, sentence_spans_list, window_text)
         try:
             record = _process_item(item, window, sentence_spans_list, evidence_spans)
         except _DropItem as drop:
@@ -261,16 +263,16 @@ def _process_item(
     if not sentence_spans:
         raise _DropItem("no_sentence_spans")
 
-    indices = [entry.index for entry in item.evidence]
-    if len(indices) != len(set(indices)):
+    normalized_evidence = [_normalize(entry) for entry in item.evidence]
+    if len(normalized_evidence) != len(set(normalized_evidence)):
         raise _DropItem("duplicate_evidence")
-    if any(idx < 0 or idx >= len(sentence_spans) for idx in indices):
-        raise _DropItem("evidence_oob")
-    if indices != sorted(indices):
-        raise _DropItem("evidence_unsorted")
 
     if evidence_spans is None:
-        evidence_spans = resolve_evidence_spans(item.evidence, sentence_spans)
+        evidence_spans = resolve_evidence_spans(
+            item.evidence,
+            sentence_spans,
+            window["window_text"],
+        )
     if not evidence_spans:
         raise _DropItem("evidence_alignment_failed")
     question_lower = question.lower()
@@ -286,7 +288,7 @@ def _process_item(
     if wh not in ALLOWED_WH:
         wh = detect_wh(question)
 
-    evidence_entries = [entry.model_dump() for entry in item.evidence]
+    evidence_entries = list(item.evidence)
 
     record = {
         "doc_id": window["doc_id"],
@@ -422,14 +424,16 @@ def _update_stats(
 
             if evidence_counts is not None:
                 for ev in item.get("evidence", []) or []:
+                    if isinstance(ev, str):
+                        if ev.strip():
+                            evidence_counts["text"] += 1
+                        continue
                     if isinstance(ev, dict):
                         ev_type = ev.get("type")
-                    else:
-                        ev_type = None
-                    if isinstance(ev_type, str):
-                        ev_value = ev_type.strip().lower()
-                        if ev_value:
-                            evidence_counts[ev_value] += 1
+                        if isinstance(ev_type, str):
+                            ev_value = ev_type.strip().lower()
+                            if ev_value:
+                                evidence_counts[ev_value] += 1
     doc_stats = stats["per_doc"][window["doc_id"]]
     doc_stats["windows"] += 1
     doc_stats["kept"] += len(kept)
