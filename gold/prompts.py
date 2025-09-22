@@ -143,7 +143,8 @@ Decision Policy
 
 Question Rules
 Q-NO-VAGUE — The `question` must not use vague placeholders like "someone/somebody/something" or bare deictics "this/that/these/those" without a noun; standard interrogatives (who/what/when/where/why/how/how many/how much) are allowed and not considered vague.  
-Q-CONCRETE — The `question` must mention at least one concrete entity, date, number, metric, or named concept.
+Q-CONCRETE — The `question` must mention at least one concrete entity, date, number, metric, or named concept.  
+Q-NO-LEAK — The `question` must not reveal the `answer_text` or make it trivial to guess. A violation occurs if the `question` contains the entire answer or a significant part of it (e.g., a unique name, number, or phrase) that effectively gives the answer away. Overlaps on generic context terms (units, labels like "revenue," or common years) are allowed. Purpose: block trivial “copy-the-answer” questions, not natural contextual phrasing.
 
 Answer Rules
 A-NO-HALLUCINATION — The `answer_text` must not contradict the `evidence`/`window_text` or add unsupported substantive facts (e.g., numbers, dates, names, units, qualifiers, causal links). Harmless paraphrase, shortening, or omission of irrelevant words must not be flagged.  
