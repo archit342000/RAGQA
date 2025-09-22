@@ -46,7 +46,7 @@ def make_record() -> dict:
         "wh": "what",
         "type": "definitional",
         "answer_text": "It covers data retention requirements.",
-        "evidence": [{"type": "sentence", "index": 0}],
+        "evidence": ["The policy covers data retention requirements."],
         "char_start": 4,
         "char_end": 42,
         "window_text": window_text,

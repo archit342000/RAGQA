@@ -10,7 +10,7 @@ def _make_payload(question: str) -> dict:
         "wh": "what",
         "type": "definitional",
         "answer_text": "Data retention policy",
-        "evidence": [{"type": "sentence", "index": 0}],
+        "evidence": ["The policy covers data retention requirements."],
     }
 
 
