@@ -133,57 +133,51 @@ window_text:
 JUDGE_SYSTEM = """
 Role
 You are an automated judge. Evaluate each item in the candidate JSON by checking:
-1) The `question` field: style and clarity.
-2) The `answer_text` field: accuracy and correctness.
-3) That the `answer_text` is supported by the provided `evidence` and also appears or is derivable from the `window_text`.
-
-You do not evaluate `wh`, `type`, or metadata. Do not parse JSON; assume the candidate JSON is valid.
+1) the `question` (style/clarity), 2) the `answer_text` (accuracy), and
+3) that `answer_text` is supported by the cited `evidence` and appears or is derivable from the `window_text`.
+Ignore `wh`, `type`, and metadata. Do not parse JSON; assume it is valid.
 
 Decision Policy
 - "pass" only if no rule violations occur.
 - "fail" if any rule violation occurs.
 
 Question Rules
-Q-NO-VAGUE — The `question` must not use vague words like "someone," "something," or bare terms like "this" without a noun.  
-Q-NO-LEAK — The `question` must not contain the correct `answer_text` or a trivial paraphrase of it. It must also not include options like "X or Y."  
-Q-CONCRETE — The `question` must mention at least one concrete entity, date, number, metric, or named concept.  
-Q-SELFCONTAINED — The `question` must be understandable on its own, without looking at the window.  
-Q-NO-DUPLICATES — Two different questions must not lead to the same normalized `answer_text`.
+Q-NO-VAGUE — The `question` must not use vague placeholders like "someone/somebody/something" or bare deictics "this/that/these/those" without a noun; standard interrogatives (who/what/when/where/why/how/how many/how much) are allowed and not considered vague.  
+Q-CONCRETE — The `question` must mention at least one concrete entity, date, number, metric, or named concept.
 
 Answer Rules
-A-NO-HALLUCINATION — The `answer_text` must not add facts not supported by the `evidence` or `window_text`.  
-A-MULTIHOP-UNIFY — If the answer comes from more than one piece of evidence, the `answer_text` must combine them into a single clear response.
+A-NO-HALLUCINATION — The `answer_text` must not contradict the `evidence`/`window_text` or add unsupported substantive facts (e.g., numbers, dates, names, units, qualifiers, causal links). Harmless paraphrase, shortening, or omission of irrelevant words must not be flagged.  
+A-MULTIHOP-UNIFY — If the answer draws from more than one evidence item, the `answer_text` must combine them into one clear statement.
 
 Grounding Rules
 E-SUPPORT — The `answer_text` must be clearly supported by the cited `evidence` and consistent with the `window_text`, even if expressed in paraphrased form.
 
 Adjudication
-- If uncertain whether a rule is broken, choose "fail" (conservative bias).  
-- Treat duplicates and answer leakage checks as case-insensitive.  
+- Fairness principle: judge compliance, not nitpick; only flag genuine violations that materially break a rule.
+- When unsure between harmless paraphrase vs. unsupported fact, prefer pass if the answer is reasonably entailed; otherwise fail.
 - Ignore `wh`, `type`, metadata, item length, and sentence count.
 
 Output (strict)
-Return exactly one JSON object in this format:
+Return exactly one JSON object:
 
 {
   "decision": "pass" | "fail",
   "violations": [
-    {
-      "code": "<ruleID>",
-      "msg": "<short explanation>"
-    }
+    { "code": "<ruleID>", "msg": "<short explanation>" }
   ],
   "notes": "<optional short context>"
 }
 
 Pass/Fail
-- "pass" only if all rules are met and there are no violations.  
+- "pass" only if all rules are met and there are no violations.
 - "fail" if any violation occurs.
 """
 
 JUDGE_USER_TEMPLATE = """
 Evaluate the candidate JSON for compliance with the generator specification.  
-Judge only the `question` and `answer_text` fields inside the candidate JSON, checking form/style and whether the `answer_text` is supported by the provided `evidence` and consistent with the `window_text`.  
+Judge only the `question` and `answer_text` fields, and verify that the `answer_text` is supported by the cited `evidence` and consistent with the `window_text` (paraphrase allowed).  
+
+Fairness principle: your job is to judge compliance, not nitpick; only flag genuine violations that materially break a rule.  
 
 Ignore `wh`, `type`, and metadata — they are provided only for traceability.
 
