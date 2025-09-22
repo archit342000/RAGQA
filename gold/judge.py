@@ -35,21 +35,8 @@ def _summarize_evidence(window_text: str, spans: Sequence[Tuple[int, int]]) -> s
             continue
         snippets.append(f"{idx}. {snippet}")
     if not snippets:
-        return "No aligned evidence snippets available."
+        return "No evidence snippets available."
     return "\n".join(snippets)
-
-
-def _answer_context(window_text: str, start: int, end: int, radius: int = 240) -> str:
-    if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
-        return "No answer alignment available."
-    length = len(window_text)
-    start_idx = max(0, min(length, start - radius))
-    end_idx = max(0, min(length, end + radius))
-    prefix = window_text[start_idx:start]
-    answer = window_text[start:end]
-    suffix = window_text[end:end_idx]
-    highlighted = f"{prefix}[ANSWER]{answer}[/ANSWER]{suffix}".strip()
-    return highlighted or "No answer alignment available."
 
 
 @dataclass
@@ -96,11 +83,6 @@ class LLMJudge:
         }
         candidate_json = orjson.dumps(candidate_payload, option=orjson.OPT_INDENT_2).decode("utf-8")
         evidence_text = _summarize_evidence(window_text, evidence_spans)
-        answer_excerpt = _answer_context(
-            window_text,
-            record.get("char_start", -1),
-            record.get("char_end", -1),
-        )
         user_prompt = _format_template(
             JUDGE_USER_TEMPLATE,
             requirements=self.requirements,
@@ -110,7 +92,6 @@ class LLMJudge:
             page_end=str(candidate_payload.get("page_end", "")),
             candidate_json=candidate_json,
             evidence_text=evidence_text,
-            answer_context=answer_excerpt,
             window_text=window_text,
         )
         system_prompt = JUDGE_SYSTEM

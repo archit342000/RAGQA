@@ -17,7 +17,6 @@ import yaml
 from dotenv import load_dotenv
 from tqdm.auto import tqdm
 
-from gold.align import find_span
 from gold.llm_client import VLLMClient
 from gold.prompts import SYNTH_SYSTEM, SYNTH_USER_TEMPLATE
 from gold.quality import detect_wh
@@ -48,6 +47,10 @@ def _iter_parsed_docs(parsed_dir: Path) -> Iterable[Dict]:
 
 _SENTENCE_REGEX = re.compile(r"[^.!?\n]+(?:[.!?]+|\n+|$)")
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.lower().split())
 
 
 def _sentence_spans(text: str) -> List[Tuple[int, int]]:
@@ -213,7 +216,8 @@ def _process_window(
 
     sentence_spans = _sentence_spans(window["window_text"])
     kept: List[Dict] = []
-    dedup_keys: set[Tuple[str, str]] = set()
+    seen_questions: set[str] = set()
+    seen_answers: set[str] = set()
 
     for item in valid_items:
         evidence_spans = _resolve_evidence_spans(item.evidence, sentence_spans)
@@ -222,11 +226,13 @@ def _process_window(
         except _DropItem as drop:
             drop_reasons.update({drop.reason: 1})
             continue
-        norm_question = " ".join(record["question"].lower().split())
-        norm_answer = " ".join(record["answer_text"].lower().split())
-        key = (norm_question, norm_answer)
-        if key in dedup_keys:
-            drop_reasons.update({"duplicate": 1})
+        norm_question = _normalize(record["question"])
+        if norm_question in seen_questions:
+            drop_reasons.update({"duplicate_question": 1})
+            continue
+        norm_answer = _normalize(record["answer_text"])
+        if norm_answer in seen_answers:
+            drop_reasons.update({"duplicate_answer": 1})
             continue
 
         if judge is not None:
@@ -248,7 +254,8 @@ def _process_window(
                 drop_reasons.update({"judge_reject": 1})
                 continue
 
-        dedup_keys.add(key)
+        seen_questions.add(norm_question)
+        seen_answers.add(norm_answer)
         record["id"] = _hash_item(
             record["doc_id"],
             record["window_id"],
@@ -293,11 +300,14 @@ def _process_item(
         evidence_spans = _resolve_evidence_spans(item.evidence, sentence_spans)
     if not evidence_spans:
         raise _DropItem("evidence_alignment_failed")
-    span = find_span(window["window_text"], answer_text, evidence_spans)
-    if span is None:
-        raise _DropItem("alignment_failed")
-    char_start, char_end = span
-    aligned_answer = window["window_text"][char_start:char_end]
+    question_lower = question.lower()
+    normalized_answer = answer_text.lower()
+    stripped_answer = normalized_answer.strip(".,;:!?\"'()[]{}")
+    if normalized_answer and normalized_answer in question_lower:
+        raise _DropItem("answer_leak")
+    if stripped_answer and stripped_answer in question_lower:
+        raise _DropItem("answer_leak")
+    char_start, char_end = -1, -1
 
     wh = canonicalize_wh(item.wh) if item.wh else detect_wh(question)
     if wh not in ALLOWED_WH:
@@ -312,7 +322,7 @@ def _process_item(
         "page_end": window["page_end"],
         "window_id": window["window_id"],
         "question": question,
-        "answer_text": aligned_answer,
+        "answer_text": answer_text,
         "wh": wh,
         "type": item.type.strip(),
         "evidence": evidence_entries,

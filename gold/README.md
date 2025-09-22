@@ -1,8 +1,9 @@
 # LLM Gold-Set Builder
 
 This workflow generates high-quality QA pairs directly from parsed documents
-using a vLLM-hosted model. Questions are produced by the LLM, but answer spans
-are aligned deterministically by the codebase.
+using a vLLM-hosted model. Questions and answers are produced by the LLM under
+strict prompting, and answers are taken verbatim from the model output (no
+post-hoc alignment).
 
 ## Quickstart
 
@@ -32,7 +33,7 @@ are aligned deterministically by the codebase.
 
    This command:
    - Generates per-window candidates via `llm_synthesize.py`
-   - Aligns answer spans inside each window
+   - Collects LLM-generated QA items within each window
    - Applies WH-distribution quotas and writes `gold/gold.jsonl`
    - Records run statistics in `gold/stats.json`
 
@@ -42,10 +43,11 @@ the pre-quota pool to `gold/candidates.jsonl` for inspection.
 ## Implementation Notes
 
 - The LLM must return a JSON array of objects containing `question`, `wh`,
-  `type`, `answer_text`, and `evidence`. Character offsets are computed by the
-  alignment utilities and not supplied by the model.
-- Answer spans are validated via exact/case-insensitive/whitespace/fuzzy
-  matching. Items failing alignment, quality filters, or deduplication are
+  `type`, `answer_text`, and `evidence`. Character offsets are not provided;
+  `char_start`/`char_end` are set to `-1` because paraphrased answers cannot be
+  aligned deterministically.
+- Answer text is used directly from the model output after schema and quality
+  validation. Items failing evidence checks, quality filters, or deduplication are
   dropped with reasons recorded in `stats.json`.
 - WH quotas are enforced with an MMR-based sampler to maintain diversity while
   capping dominant categories.
