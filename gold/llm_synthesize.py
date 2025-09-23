@@ -52,6 +52,56 @@ def _normalize(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def _find_answer_span(
+    answer_text: str,
+    window_text: str,
+    evidence_spans: Optional[Sequence[Tuple[int, int]]],
+) -> Tuple[int, int]:
+    """Locate ``answer_text`` inside ``window_text``.
+
+    Returns ``(-1, -1)`` when the exact answer string cannot be found. Evidence
+    spans are used as primary search regions so repeated answers prefer the
+    highlighted portion of the window.
+    """
+
+    if not answer_text or not window_text:
+        return -1, -1
+
+    answer_len = len(answer_text)
+    window_len = len(window_text)
+
+    ranges: List[Tuple[int, int]] = []
+    seen: set[Tuple[int, int]] = set()
+
+    if evidence_spans:
+        for start, end in evidence_spans:
+            if start is None or end is None:
+                continue
+            # Clamp spans to the window bounds.
+            start = max(0, min(start, window_len))
+            end = max(0, min(end, window_len))
+            if start >= end:
+                continue
+            key = (start, end)
+            if key in seen:
+                continue
+            seen.add(key)
+            ranges.append((start, end))
+
+    full_span = (0, window_len)
+    if full_span not in seen:
+        ranges.append(full_span)
+
+    for start, end in ranges:
+        idx = window_text.find(answer_text, start, end)
+        if idx != -1:
+            candidate_end = idx + answer_len
+            if window_text[idx:candidate_end] == answer_text:
+                return idx, candidate_end
+
+    return -1, -1
+
+
 def _prompt_hash(payload: dict) -> str:
     serialized = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
     return hashlib.sha1(serialized).hexdigest()
@@ -274,7 +324,11 @@ def _process_item(
         raise _DropItem("answer_leak")
     if stripped_answer and stripped_answer in question_lower:
         raise _DropItem("answer_leak")
-    char_start, char_end = -1, -1
+    char_start, char_end = _find_answer_span(
+        answer_text,
+        window["window_text"],
+        evidence_spans,
+    )
 
     wh = canonicalize_wh(item.wh) if item.wh else detect_wh(question)
     if wh not in ALLOWED_WH:
