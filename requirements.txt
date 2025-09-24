@@ -1,14 +1,6 @@
-pypdf>=5
-unstructured>=0.12
-pdfminer.six>=202407
 gradio>=4.0
 pytest>=7.0
-langchain>=0.2
-langchain-text-splitters>=0.1.0
 sentence-transformers>=2.7
-transformers>=4.41
-langchain-community>=0.2
-langchain-experimental>=0.0.55
 faiss-cpu>=1.7
 rank-bm25>=0.2
 numpy>=1.23
@@ -25,3 +17,6 @@ pydantic>=2.7.0
 python-dotenv>=1.0.1
 tiktoken>=0.7.0
 rapidfuzz>=3.9.0
+PyMuPDF==1.24.9
+layoutparser==0.3.4
+scikit-image>=0.22

@@ -5,10 +5,18 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, NamedTuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, NamedTuple, Optional, TYPE_CHECKING
 
 
-class ParsedPage(NamedTuple):
+if TYPE_CHECKING:  # pragma: no cover - import hints only when type checking
+    from pipeline.layout.lp_fuser import FusedDocument
+    from pipeline.layout.router import LayoutRoutingPlan
+    from pipeline.layout.signals import PageLayoutSignals
+
+
+@dataclass(slots=True)
+class ParsedPage:
     """Represents one page extracted from a document."""
 
     doc_id: str
@@ -16,16 +24,22 @@ class ParsedPage(NamedTuple):
     text: str
     char_range: tuple[int, int]
     metadata: Dict[str, str]
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
-class ParsedDoc(NamedTuple):
+@dataclass(slots=True)
+class ParsedDoc:
     """Represents an entire parsed document."""
 
     doc_id: str
-    pages: list[ParsedPage]
+    pages: List[ParsedPage]
     total_chars: int
     parser_used: str
     stats: Dict[str, float]
+    meta: Dict[str, Any] = field(default_factory=dict)
+    fused_document: Optional["FusedDocument"] = None
+    layout_signals: Optional[List["PageLayoutSignals"]] = None
+    routing_plan: Optional["LayoutRoutingPlan"] = None
 
 
 class RunReport(NamedTuple):

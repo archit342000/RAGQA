@@ -1,0 +1,19 @@
+layout_models:
+  publaynet:
+    provider: layoutparser
+    model: lp://PubLayNet/faster_rcnn_R_50_FPN_3x/config
+    dpi: 180
+    batch_size: 6
+  prima:
+    provider: layoutparser
+    model: lp://PrimaLayout/mask_rcnn_R_50_FPN_3x/config
+    dpi: 180
+    batch_size: 4
+  docbank:
+    provider: layoutparser
+    model: lp://DocBank/faster_rcnn_R_50_FPN_3x/config
+    dpi: 200
+    batch_size: 6
+embeddings:
+  default: all-MiniLM-L6-v2
+  fallback: intfloat/e5-small-v2

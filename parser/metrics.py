@@ -1,7 +1,7 @@
 """Metrics utilities for parsed documents."""
 
-# This module focuses on lightweight heuristics that inform fallback logic
-# and populate the optional debug panel exposed in the UI.
+# This module focuses on lightweight heuristics that feed status/debug panels
+# for the hybrid parser without depending on heavy third-party metrics.
 
 from __future__ import annotations
 

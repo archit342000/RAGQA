@@ -1,0 +1,26 @@
+threading:
+  anchor_template: "[AUX-{page}-{index:03d}]"
+  allow_adjacent_figure_aux: false
+aux_detection:
+  font_ratio_threshold: 0.85
+  width_ratio_threshold: 0.7
+  center_tolerance_ratio: 0.12
+  off_grid_tolerance_ratio: 0.2
+  bottom_band_ratio: 0.15
+  min_confidence: 0.5
+  figure_iou_threshold: 0.05
+  figure_distance_ratio: 0.15
+  lexicon:
+    - "Fig."
+    - "Figure"
+    - "Table"
+    - "Source"
+    - "Activity"
+    - "Discuss"
+    - "Think"
+    - "Imagine"
+    - "Let's"
+    - "Let’s"
+    - "Keywords"
+serializer:
+  log_preview: 12

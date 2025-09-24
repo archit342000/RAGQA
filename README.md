@@ -1,101 +1,130 @@
-# Document Parser & HF Spaces Demo
+# Hybrid Document Parser & HF Spaces Demo
 
-This project provides a lightweight document parsing module tailored for Retrieval-Augmented Generation (RAG) pipelines, plus a Gradio UI suited for Hugging Face Spaces deployments. The parser prioritises fast PDF extraction via `pypdf`, falls back to the `unstructured` library when the layout is challenging, and exposes metrics that help you decide when to escalate processing.
+This project ships a hybrid PDF parsing stack tailored for Retrieval-Augmented Generation (RAG) workloads alongside a Gradio UI
+suited for Hugging Face Spaces deployments. The pipeline combines PyMuPDF-first extraction, selective LayoutParser zoning, repair
+heuristics, and retrieval-aware chunking to preserve narrative flow while keeping auxiliary artefacts such as tables and footnotes
+anchored for citation.
 
 ## Quickstart
 
 1. Install dependencies:
    ```bash
    pip install -r requirements.txt
+   # Optional heavy extras used by the layout pipeline
+   pip install "PyMuPDF==1.24.*" "pdfplumber==0.11.*" "camelot-py[cv]==0.11.*" "ocrmypdf==16.*" \
+     "layoutparser==0.3.4" "torch==2.3.*" "detectron2==0.6" "sentence-transformers==2.7.*" "spacy==3.7.*" rapidfuzz==3.* scikit-image
+   python -m spacy download en_core_web_sm
    ```
-2. Run the demo locally:
+2. Run the Spaces-oriented demo locally:
    ```bash
    python app.py
    ```
-   or rely on Gradio's CLI:
+   or via Gradio's CLI:
    ```bash
    gradio app.py
    ```
+3. Execute the end-to-end pipeline from the command line:
+   ```bash
+   python -m pipeline.run --pdf sample_docs/sample.pdf --emit-chunks artifacts/sample_chunks.jsonl
+   ```
 
-Upload one or more PDF, TXT, or Markdown files to preview per-page text, see fallback decisions, and (optionally) inspect metrics from the gated debug panel.
+Upload one or more PDF, TXT, or Markdown files to preview per-page text, inspect routing decisions, and (optionally) view detailed
+metrics via the gated debug panel.
 
 ## Hugging Face Spaces Notes
 
-- Designed for the CPU runtime; no GPU or heavy OCR dependencies are required.
-- The hi-res OCR path is gated by an environment flag and currently stubbed to the fast strategy to avoid Detectron2/Tesseract installs.
+- Designed for the CPU runtime; PyMuPDF parsing is fast and LayoutParser routing is gated by heuristics.
+- The hi-res OCR path remains gated by an environment flag and falls back gracefully when Detectron2/Tesseract are unavailable.
 - Keep uploads small (<800 pages) for responsive demos. The `MAX_PAGES` flag trims larger documents with a visible warning.
 
 ## Configuration via Environment Variables
 
-Default configuration values live in the project's `.env` file; edit it to
-customise behaviour locally or on Spaces. The parser reads the following
-variables (defaults in parentheses):
+Default configuration values live in the project's `.env` file; edit it to customise behaviour locally or on Spaces. The parser
+reads the following variables (defaults in parentheses):
 
 - `MAX_PAGES` (`800`): hard limit on processed pages per document.
 - `MAX_TOTAL_PAGES` (`1200`): aggregate ceiling across all uploaded documents in one run.
 - `MIN_CHARS_PER_PAGE` (`200`): threshold used to detect sparse pages during heuristic checks.
-- `FALLBACK_EMPTY_PAGE_RATIO` (`0.3`): ratio of low-density pages that triggers the `unstructured` fallback.
-- `UNSTRUCTURED_STRATEGY` (`fast`): default fallback strategy. The UI can switch to "High accuracy" when `ENABLE_HI_RES=true`.
-- `ENABLE_HI_RES` (`false`): when set to `true`, enables the "High accuracy" parsing mode in the UI. Otherwise the option is disabled and requests are clamped to the fast path.
+- `UNSTRUCTURED_STRATEGY` (`fast`): default parsing mode surfaced in the UI dropdown ("Fast", "Auto", or "High-Res"). The
+  legacy name remains for compatibility.
+- `ENABLE_HI_RES` (`false`): when set to `true`, enables the "High accuracy" parsing mode in the UI. Otherwise the option is
+  disabled and requests are clamped to the fast path.
 - `SHOW_DEBUG` (`false`): when `true`, exposes the developer-focused metrics panel in the UI.
 - `CHUNK_MODE_DEFAULT` (`semantic`): default chunking strategy when the UI control is untouched.
 - `MAX_TOTAL_TOKENS_FOR_CHUNKING` (`300000`): guardrail enforced by the chunker to keep latency bounded.
-- `SEMANTIC_MODEL_NAME` (`intfloat/e5-small-v2`): embedding model used by the semantic chunker. Override to match your hardware budget.
-- `TOKENIZER_NAME` (`hf-internal-testing/llama-tokenizer`): tokenizer used for token accounting inside the chunker.
+- `PIPELINE_SKIP_EMBEDDER` (`false`): skip loading the optional semantic embedder when set to `true`.
+- `EMBEDDING_MODEL` (`all-MiniLM-L6-v2`): sentence-transformer used by the hybrid chunker when semantic mode is enabled.
+- `TOKENIZER_NAME` (`hf-internal-testing/llama-tokenizer`): tokenizer used for legacy token accounting.
 
-### Why hide these knobs?
+### Hybrid Pipeline Overview
 
-These thresholds and strategy fields are expert tuning levers that depend on document corpora. Exposing them in the user interface creates confusion without delivering value. They remain fully configurable via environment variables so deployments can tailor behaviour without overwhelming end users.
+The updated `pipeline/` package orchestrates a multi-stage PDF workflow designed for robust mixed-layout parsing:
 
-## Fallback Heuristics
+1. **Ingestion (`pipeline.ingest.pdf_parser`)** – PyMuPDF extracts spans, lines, fonts, and bounding boxes per page, emitting a
+   structured page graph that preserves block metadata (font statistics, numeric ratios, bullet density, etc.), suppresses repeating
+   headers/footers only when they recur on ≥5 pages, and tags each block with section hierarchy / keep-with-next metadata for
+   downstream threading.
+2. **Layout Signals (`pipeline.layout.signals`)** – Nine robust signals are computed per page (CIS, OGR, BXS, DAS, FVS, ROJ, TFI,
+   MSA, FNL). Values are normalised to [0, 1] via the median/IQR of the first ten pages before a weighted page score is derived.
+3. **Routing (`pipeline.layout.router`)** – Pages are queued for LayoutParser when the score ≥0.55 or any of the hard triggers
+   fire (dense graphics overlap, table intrusions, column flips, repair loop failures). Neighbour pages with score ≥0.50 are
+   included while respecting the ≤30% budget (with a contiguous +5 page overflow allowance).
+4. **Auxiliary Detection (`pipeline.layout.aux_detection`, `pipeline.layout.lp_locator`)** – Lexical, geometric, and style cues
+   isolate captions, callouts, and footnotes; selective LayoutParser runs localise dense regions for figure/table pairing.
+5. **Layout Fusion (`pipeline.layout.lp_fuser`)** – LayoutParser detections (PubLayNet/PRIMA/DocBank) are fused with PyMuPDF
+   blocks using IoU≥0.3. Auxiliary regions (lists, tables, figures, titles off-grid) are stored separately while prose blocks are
+   ordered using detected regions and column threading.
+6. **Threading (`pipeline.threading.threader`, `pipeline.threading.transactions`, `pipeline.repair.dehyphenate`, `pipeline.audit.thread_audit`)** – Two-page lookahead, per-section transaction queues, and cross-page dehyphenation keep section text contiguous while banning anchors between headers and their lead paragraphs. Auxiliaries inherit section ownership early and remain queued until the section is sealed.
+7. **Serialization (`pipeline.serialize.serializer`, `pipeline.audit.order_guards`)** – Sentence-level units and auxiliary blocks are emitted with global order keys `(doc_id, section_seq, para_seq, sent_seq, emit_phase)`. A single serializer stream guarantees monotonic ordering, defers auxiliary flushes to post-section phases, and enforces guardrails so emit phases never regress.
+8. **Repair (`pipeline.repair.repair_pass`)** – Adjacent main-flow blocks are stitched when embedding cosine ≥0.80, guarded against over-merging across columns with large Δy. Footnotes are linked via superscript markers and retained as separate, anchored blocks. A failure counter is returned so the router can escalate LayoutParser coverage if stitching stalls.
+9. **Chunking (`pipeline.chunking.chunker`)** – Prose targets ~500 tokens (180–700 bounds, 80-token overlap) with semantic splits when sections exceed 600 tokens and sentence-level Δcos >0.15. Procedures respect 250–350 token windows with 40-token overlap. Main-flow chunks are assembled strictly from `emit_phase=0` units; once a section closes, captions, callouts, footnotes, and other auxiliaries are rendered as standalone chunks linked via metadata. Tables are sharded into 6–12 row ranges with duplicated headers and `col:value` flattening.
+10. **Telemetry (`pipeline.telemetry.metrics`)** – Collects LP utilisation ratios, latency per page, score distributions, top-two signals per routed page, interleave error rates, repair merge/split percentages, threading queue metrics, and retrieval deltas (Hit@K/MRR).
+### Chunking Metadata
 
-1. Extract text from each page with `pypdf` and compute character counts.
-2. If the fraction of pages below the `MIN_CHARS_PER_PAGE` threshold exceeds `FALLBACK_EMPTY_PAGE_RATIO`, switch to `unstructured`.
-3. Independently, compute layout metrics (short-line ratio, blank-line ratio, digit-heavy ratio). If the weighted score ≥ 0.6, trigger fallback.
-4. The hi-res path is clamped to the fast path unless `ENABLE_HI_RES=true`, and even then it stays stubbed pending OCR dependencies.
+Each emitted chunk records:
 
-## Chunking Strategies
+- `doc_id`, `page_start`, `page_end`
+- Character offsets (`char_start`, `char_end`)
+- Source block identifiers and types
+- Section metadata (`section_id`, `section_seq`) and ordered `para_ids`
+- Region type counts
+- Table row ranges (for structured/table chunks)
+- Boolean `has_anchor_refs` flag when inline anchors are inserted
+- Auxiliary chunk details (`aux_kind`, `owner_section_id`, `owner_section_seq`, `linked_figure_id`, `references`)
+- Emit-phase awareness (main flow first, auxiliaries post-section)
 
-After parsing and cleaning, the app automatically turns page text into
-retrieval-sized chunks. Two strategies are available from the "Chunking mode"
-dropdown:
+Parser and threading thresholds (auxiliary lexicon, font/width tolerances, optional figure-adjacent anchoring) are configurable via `configs/parser.yaml`.
 
-- **Semantic (recommended)** – Uses LangChain's `SemanticChunker` with
-  `intfloat/e5-small-v2` embeddings to group coherent sentences before packing
-  them into ~200–700 token windows. Pages detected as table/list-heavy fall
-  back to fixed windowing automatically.
-- **Fixed** – Applies deterministic sliding windows (700 tokens with 100-token
-  overlap, or 400/40 for table-heavy pages) while keeping page anchors intact.
+These annotations align chunks with the original document for citation, reranking, and gold alignment.
 
-Chunk metadata records `doc_id`, human-friendly `doc_name`, originating
-`page_start`/`page_end`, the first heading encountered, and the token count
-used for retrieval. Switch modes via the UI or set `CHUNK_MODE_DEFAULT` in the
-`.env` file for unattended deployments.
+## Telemetry & Monitoring
 
-## Debugging
- 
-Enable the `SHOW_DEBUG=true` environment flag to surface parser choice,
-aggregate metrics, fallback reasons, chunk counts, and timing data. The panel
-stays hidden by default to keep the end-user experience focused.
+`TelemetryCollector` aggregates pipeline metrics and provides JSON-friendly summaries plus log-friendly helpers. The CLI driver
+logs LP utilisation, latency, and retrieval deltas after each run. Downstream evaluation scripts can ingest the summaries to track
+regression suites.
 
 ## Testing
 
-The included tests exercise the routing heuristics and cleaning routines:
+The included tests exercise the hybrid parser, routing heuristics, and chunking flows:
 
 ```bash
-pytest
+pytest -q
 ```
 
-For integration-style checks, drop sample fixtures under `sample_docs/` as described in `sample_docs/README.md`.
+For integration-style checks, drop sample fixtures under `sample_docs/` as described in `sample_docs/README.md`, then execute the
+CLI:
+
+```bash
+python -m pipeline.run --pdf sample_docs/sample.pdf --emit-chunks artifacts/sample_chunks.jsonl
+```
 
 ## Package Overview
 
-- `parser/` – modular extraction, cleaning, metrics, and driver logic.
-- `chunking/` – semantic/fixed chunkers plus token packers for retrieval windows.
+- `parser/` – hybrid ingestion driver and cleaning utilities surfaced by the UI.
+- `pipeline/` – hybrid PyMuPDF/LayoutParser pipeline modules.
+- `chunking/` – compatibility wrappers around the hybrid retrieval chunker used by the UI.
 - `app.py` – Gradio Blocks UI for quick inspection.
 - `tests/` – pytest suite covering parsing and chunking flows.
-
-This structure keeps the parser module production-ready while remaining light enough for Hugging Face Spaces cold starts.
 
 ## Offline Retrieval Evaluation
 
@@ -114,4 +143,5 @@ This structure keeps the parser module production-ready while remaining light en
    python eval/ablation.py --suite basic --gold path/to/gold.jsonl --chunks path/to/chunks.jsonl
    ```
 
-Outputs are written to the directory configured in `eval/config.yaml` (default `runs/`). The generated `summary.csv`, `per_tag.csv`, and `report.html` provide overall comparisons, per-tag slices, and bootstrap-based engine comparisons.
+Outputs are written to the directory configured in `eval/config.yaml` (default `runs/`). The generated `summary.csv`,
+`per_tag.csv`, and `report.html` provide overall comparisons, per-tag slices, and bootstrap-based engine comparisons.
