@@ -1,117 +1,88 @@
-# Document Parser & HF Spaces Demo
+# pdfchunks – High-Fidelity PDF ➜ Chunk Pipeline
 
-This project provides a lightweight document parsing module tailored for Retrieval-Augmented Generation (RAG) pipelines, plus a Gradio UI suited for Hugging Face Spaces deployments. The parser prioritises fast PDF extraction via `pypdf`, falls back to the `unstructured` library when the layout is challenging, and exposes metrics that help you decide when to escalate processing.
+This repository provides a ground-up rewrite of the PDF parsing and chunking
+pipeline tailored for Retrieval-Augmented Generation (RAG) workloads. The new
+architecture extracts layout-aware blocks with PyMuPDF, enforces a strict
+allow-list for MAIN prose, isolates AUX payloads until their owning section is
+sealed, and emits retrieval chunks with deterministic ordering guarantees.
 
-## Quickstart
+## Pipeline Overview
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Run the demo locally:
-   ```bash
-   python app.py
-   ```
-   or rely on Gradio's CLI:
-   ```bash
-   gradio app.py
-   ```
+1. **Block Extraction** – `BlockExtractor` converts PyMuPDF span output into
+   rich block objects (`text`, `font`, `bbox`, `page`, `line_height`). Repeated
+   headers/footers (appearing on ≥5 pages) are suppressed automatically.
+2. **Baseline Estimation** – `BaselineEstimator` infers column bands, body font
+   medians, and text density percentiles to anchor later classification steps.
+3. **Classification** – `BlockClassifier` applies a strict allow-list:
+   column overlap ≥90 %, width ≥80 % of the band, typography within ±10 / 12 %,
+   density within P20–P80, and no lexical cues such as `Figure`, `Activity`,
+   `Keywords`, etc. Heading overrides promote legitimate headers to MAIN even
+   when they sit inside exclusion bands.
+4. **Ownership** – Non-MAIN blocks become AUX with subtypes (captions,
+   activities, callouts, footnotes). Each payload inherits an
+   `owner_section_seq` based on the nearest heading or explicit metadata.
+5. **Threading** – `Threader` keeps MAIN paragraphs continuous with
+   cross-page dehyphenation and sentence segmentation. Section transactions
+   buffer AUX content in per-section queues, flushing only after the section is
+   sealed. Every emitted AUX sentence is wrapped in `<aux>...</aux>`.
+6. **Serialization** – A single `Serializer` enforces monotonic
+   `(doc_id, section_seq, para_seq, sent_seq, emit_phase)` order keys, blocking
+   any 1→0 regressions.
+7. **Chunking** – `Chunker` packs MAIN-only retrieval windows (~500 tokens,
+   overlap 80/40) and, after seals, emits AUX-only chunks grouped by
+   section/subtype. AUX payloads never mingle with MAIN text.
+8. **Audits & Telemetry** – `run_audits` asserts AUX isolation, monotonic order
+   keys, and `<aux>` wrapping for both units and chunks while logging key
+   telemetry. `metrics.compute_metrics` exposes lightweight counters for higher
+   level dashboards.
 
-Upload one or more PDF, TXT, or Markdown files to preview per-page text, see fallback decisions, and (optionally) inspect metrics from the gated debug panel.
+All behaviour is configurable through `configs/parser.yaml`. The default values
+mirror the requirements described in the project brief and can be overridden at
+runtime or via the CLI.
 
-## Hugging Face Spaces Notes
+## Getting Started
 
-- Designed for the CPU runtime; no GPU or heavy OCR dependencies are required.
-- The hi-res OCR path is gated by an environment flag and currently stubbed to the fast strategy to avoid Detectron2/Tesseract installs.
-- Keep uploads small (<800 pages) for responsive demos. The `MAX_PAGES` flag trims larger documents with a visible warning.
+```bash
+pip install -e .
+python -m pdfchunks.cli path/to/document.pdf --json
+```
 
-## Configuration via Environment Variables
+The CLI drives the full pipeline: extraction → classification → threading →
+chunking, runs guardrail audits, and prints JSON metrics (when `--json` is
+provided). Logging is enabled via `--log-level`.
 
-Default configuration values live in the project's `.env` file; edit it to
-customise behaviour locally or on Spaces. The parser reads the following
-variables (defaults in parentheses):
+## Key Modules
 
-- `MAX_PAGES` (`800`): hard limit on processed pages per document.
-- `MAX_TOTAL_PAGES` (`1200`): aggregate ceiling across all uploaded documents in one run.
-- `MIN_CHARS_PER_PAGE` (`200`): threshold used to detect sparse pages during heuristic checks.
-- `FALLBACK_EMPTY_PAGE_RATIO` (`0.3`): ratio of low-density pages that triggers the `unstructured` fallback.
-- `UNSTRUCTURED_STRATEGY` (`fast`): default fallback strategy. The UI can switch to "High accuracy" when `ENABLE_HI_RES=true`.
-- `ENABLE_HI_RES` (`false`): when set to `true`, enables the "High accuracy" parsing mode in the UI. Otherwise the option is disabled and requests are clamped to the fast path.
-- `SHOW_DEBUG` (`false`): when `true`, exposes the developer-focused metrics panel in the UI.
-- `CHUNK_MODE_DEFAULT` (`semantic`): default chunking strategy when the UI control is untouched.
-- `MAX_TOTAL_TOKENS_FOR_CHUNKING` (`300000`): guardrail enforced by the chunker to keep latency bounded.
-- `SEMANTIC_MODEL_NAME` (`intfloat/e5-small-v2`): embedding model used by the semantic chunker. Override to match your hardware budget.
-- `TOKENIZER_NAME` (`hf-internal-testing/llama-tokenizer`): tokenizer used for token accounting inside the chunker.
-
-### Why hide these knobs?
-
-These thresholds and strategy fields are expert tuning levers that depend on document corpora. Exposing them in the user interface creates confusion without delivering value. They remain fully configurable via environment variables so deployments can tailor behaviour without overwhelming end users.
-
-## Fallback Heuristics
-
-1. Extract text from each page with `pypdf` and compute character counts.
-2. If the fraction of pages below the `MIN_CHARS_PER_PAGE` threshold exceeds `FALLBACK_EMPTY_PAGE_RATIO`, switch to `unstructured`.
-3. Independently, compute layout metrics (short-line ratio, blank-line ratio, digit-heavy ratio). If the weighted score ≥ 0.6, trigger fallback.
-4. The hi-res path is clamped to the fast path unless `ENABLE_HI_RES=true`, and even then it stays stubbed pending OCR dependencies.
-
-## Chunking Strategies
-
-After parsing and cleaning, the app automatically turns page text into
-retrieval-sized chunks. Two strategies are available from the "Chunking mode"
-dropdown:
-
-- **Semantic (recommended)** – Uses LangChain's `SemanticChunker` with
-  `intfloat/e5-small-v2` embeddings to group coherent sentences before packing
-  them into ~200–700 token windows. Pages detected as table/list-heavy fall
-  back to fixed windowing automatically.
-- **Fixed** – Applies deterministic sliding windows (700 tokens with 100-token
-  overlap, or 400/40 for table-heavy pages) while keeping page anchors intact.
-
-Chunk metadata records `doc_id`, human-friendly `doc_name`, originating
-`page_start`/`page_end`, the first heading encountered, and the token count
-used for retrieval. Switch modes via the UI or set `CHUNK_MODE_DEFAULT` in the
-`.env` file for unattended deployments.
-
-## Debugging
- 
-Enable the `SHOW_DEBUG=true` environment flag to surface parser choice,
-aggregate metrics, fallback reasons, chunk counts, and timing data. The panel
-stays hidden by default to keep the end-user experience focused.
+- `src/pdfchunks/parsing/block_extractor.py` – PyMuPDF block extraction.
+- `src/pdfchunks/parsing/baselines.py` – Column and density baselines.
+- `src/pdfchunks/parsing/classifier.py` – MAIN allow-list & AUX tagging.
+- `src/pdfchunks/parsing/ownership.py` – Section sequencing & AUX ownership.
+- `src/pdfchunks/threading/transactions.py` – Section transactions & AUX queues.
+- `src/pdfchunks/threading/threader.py` – MAIN threading with AUX isolation.
+- `src/pdfchunks/serialize/serializer.py` – Monotonic order enforcement.
+- `src/pdfchunks/chunking/chunker.py` – MAIN-only packing & AUX grouping.
+- `src/pdfchunks/audit/guards.py` – Guardrails (`<aux>` audits, ordering).
+- `src/pdfchunks/telemetry/metrics.py` – Lightweight metric aggregation.
 
 ## Testing
 
-The included tests exercise the routing heuristics and cleaning routines:
+The pytest suite covers:
+
+- classifier allow-list rules and heading overrides,
+- transaction guardrails (no AUX before lead paragraphs),
+- serializer monotonic ordering enforcement,
+- chunker MAIN-only packing and AUX grouping,
+- `<aux>` wrapping audits for every AUX unit and chunk.
+
+Run the tests with:
 
 ```bash
 pytest
 ```
 
-For integration-style checks, drop sample fixtures under `sample_docs/` as described in `sample_docs/README.md`.
+## Configuration
 
-## Package Overview
+`configs/parser.yaml` exposes thresholds for block extraction, classifier
+constraints, threading behaviour, chunk sizes, and audit logging. Adjust these
+values to tune the pipeline for different document corpora or AUX policies.
 
-- `parser/` – modular extraction, cleaning, metrics, and driver logic.
-- `chunking/` – semantic/fixed chunkers plus token packers for retrieval windows.
-- `app.py` – Gradio Blocks UI for quick inspection.
-- `tests/` – pytest suite covering parsing and chunking flows.
-
-This structure keeps the parser module production-ready while remaining light enough for Hugging Face Spaces cold starts.
-
-## Offline Retrieval Evaluation
-
-1. Ensure you have a gold dataset following `eval/schema.md` and chunk metadata (e.g. `chunks.jsonl`).
-2. Install evaluation dependencies: `pip install -r requirements.txt`.
-3. Run a baseline evaluation:
-   ```bash
-   python eval/runner.py --gold path/to/gold.jsonl --chunks path/to/chunks.jsonl --engine all --config eval/config.yaml
-   ```
-4. Aggregate multiple runs into an HTML report:
-   ```bash
-   python eval/report.py --runs "runs/**/*.json" --out report/report.html
-   ```
-5. Execute ablation suites (e.g., varying top-k):
-   ```bash
-   python eval/ablation.py --suite basic --gold path/to/gold.jsonl --chunks path/to/chunks.jsonl
-   ```
-
-Outputs are written to the directory configured in `eval/config.yaml` (default `runs/`). The generated `summary.csv`, `per_tag.csv`, and `report.html` provide overall comparisons, per-tag slices, and bootstrap-based engine comparisons.
