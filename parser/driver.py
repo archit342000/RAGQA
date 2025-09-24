@@ -27,6 +27,7 @@ from pipeline.layout.lp_fuser import FusedDocument, FusedPage, LayoutParserEngin
 from pipeline.layout.router import LayoutRoutingPlan, PageRoutingDecision, plan_layout_routing
 from pipeline.layout.signals import PageLayoutSignals, compute_layout_signals
 from pipeline.repair.repair_pass import EmbeddingFn, RepairStats, run_repair_pass
+from pipeline.threading.threader import Threader, ThreadingReport
 
 from .cleaning import clean_text_block, remove_headers_footers
 from .metrics import compute_document_metrics
@@ -248,7 +249,9 @@ def parse_pdf(
     signals = compute_layout_signals(document)
 
     repair_failures: Dict[int, int] = {}
+    threading_report = ThreadingReport()
     plan = plan_layout_routing(document, signals, repair_failures=repair_failures)
+    threader = Threader()
     engine = LayoutParserEngine()
     fused = fuse_layout(document, signals, plan, engine=engine)
 
@@ -259,6 +262,7 @@ def parse_pdf(
         embedder=embedder,
         previous_failures=repair_failures,
     )
+    fused, threading_report = threader.thread_document(document, fused, signals)
     if any(count >= 2 for count in repair_failures.values()):
         plan = plan_layout_routing(document, signals, repair_failures=repair_failures)
         fused = fuse_layout(document, signals, plan, engine=engine)
@@ -268,6 +272,7 @@ def parse_pdf(
             embedder=embedder,
             previous_failures=repair_failures,
         )
+        fused, threading_report = threader.thread_document(document, fused, signals)
 
     parse_duration = time.perf_counter() - overall_start
 
@@ -317,6 +322,11 @@ def parse_pdf(
             "repair_merged_blocks": float(repair_stats.merged_blocks),
             "repair_split_blocks": float(repair_stats.split_blocks),
             "footnotes_linked": float(repair_stats.footnotes_linked),
+            "thread_aux_queued": float(threading_report.queued_aux),
+            "thread_aux_placed": float(threading_report.placed_aux),
+            "thread_aux_carried": float(threading_report.carried_aux),
+            "thread_dehyphenated_pairs": float(threading_report.dehyphenated_pairs),
+            "thread_audit_fixes": float(threading_report.audit_fixes),
             "total_pages": float(len(parsed_pages)),
             "total_chars": float(total_chars),
         }
@@ -335,6 +345,13 @@ def parse_pdf(
             "split_blocks": repair_stats.split_blocks,
             "footnotes_linked": repair_stats.footnotes_linked,
             "failure_counts": repair_stats.failure_counts,
+        },
+        "threading": {
+            "queued": threading_report.queued_aux,
+            "placed": threading_report.placed_aux,
+            "carried": threading_report.carried_aux,
+            "dehyphenated": threading_report.dehyphenated_pairs,
+            "audit_fixes": threading_report.audit_fixes,
         },
         "signals_summary": _summarise_signals(signals),
     }

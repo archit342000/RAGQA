@@ -17,6 +17,7 @@ from pipeline.layout.lp_fuser import LayoutParserEngine, fuse_layout
 from pipeline.layout.router import plan_layout_routing
 from pipeline.layout.signals import compute_layout_signals
 from pipeline.repair.repair_pass import run_repair_pass
+from pipeline.threading.threader import Threader
 from pipeline.telemetry.metrics import TelemetryCollector
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ def main(argv: List[str] | None = None) -> int:
     signals = compute_layout_signals(document)
 
     telemetry = TelemetryCollector()
+    threader = Threader()
 
     repair_failures: dict[int, int] = {}
     plan = plan_layout_routing(document, signals, repair_failures=repair_failures, dpi=args.dpi)
@@ -89,6 +91,8 @@ def main(argv: List[str] | None = None) -> int:
     fused, repair_stats, repair_failures = run_repair_pass(fused, signals, embedder=embedder, previous_failures=repair_failures)
     total_blocks = sum(len(page.main_flow) for page in fused.pages)
     telemetry.record_repair(repair_stats, total_blocks)
+    fused, threading_report = threader.thread_document(document, fused, signals)
+    telemetry.record_threading(threading_report)
 
     if any(count >= 2 for count in repair_failures.values()):
         logger.info("Re-running routing after repair failures")
@@ -98,6 +102,8 @@ def main(argv: List[str] | None = None) -> int:
         fused, repair_stats, repair_failures = run_repair_pass(fused, signals, embedder=embedder, previous_failures=repair_failures)
         total_blocks = sum(len(page.main_flow) for page in fused.pages)
         telemetry.record_repair(repair_stats, total_blocks)
+        fused, threading_report = threader.thread_document(document, fused, signals)
+        telemetry.record_threading(threading_report)
 
     chunker = DocumentChunker(embedder=embedder)
     chunks = chunker.chunk_document(fused, signals)

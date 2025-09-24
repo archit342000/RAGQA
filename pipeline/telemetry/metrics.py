@@ -9,6 +9,7 @@ from typing import Dict, List, Mapping, Sequence
 from pipeline.layout.router import LayoutRoutingPlan
 from pipeline.layout.signals import PageLayoutSignals
 from pipeline.repair.repair_pass import RepairStats
+from pipeline.threading.threader import ThreadingReport
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,11 @@ class TelemetryCollector:
     lp_signal_top2: Dict[int, List[str]] = field(default_factory=dict)
     interleave_errors: int = 0
     interleave_total: int = 0
+    threading_queued: int = 0
+    threading_placed: int = 0
+    threading_carried: int = 0
+    threading_dehyphenated: int = 0
+    threading_audit_fixes: int = 0
     repair_merges: int = 0
     repair_splits: int = 0
     repair_total_blocks: int = 0
@@ -55,6 +61,13 @@ class TelemetryCollector:
         self.repair_splits += max(0, stats.split_blocks)
         self.repair_total_blocks += max(0, total_blocks)
 
+    def record_threading(self, report: ThreadingReport) -> None:
+        self.threading_queued += max(0, report.queued_aux)
+        self.threading_placed += max(0, report.placed_aux)
+        self.threading_carried += max(0, report.carried_aux)
+        self.threading_dehyphenated += max(0, report.dehyphenated_pairs)
+        self.threading_audit_fixes += max(0, report.audit_fixes)
+
     def record_retrieval_metrics(
         self,
         *,
@@ -81,6 +94,13 @@ class TelemetryCollector:
             "interleave_error_rate": interleave_rate,
             "repair_merge_pct": repair_merge_pct,
             "repair_split_pct": repair_split_pct,
+            "threading": {
+                "queued": self.threading_queued,
+                "placed": self.threading_placed,
+                "carried": self.threading_carried,
+                "dehyphenated": self.threading_dehyphenated,
+                "audit_fixes": self.threading_audit_fixes,
+            },
             "retrieval_deltas": retrieval_deltas,
         }
 

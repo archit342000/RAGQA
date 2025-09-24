@@ -1,21 +1,11 @@
-"""PyMuPDF-first PDF parser emitting detailed page graphs.
-
-This module extracts fine-grained layout information from PDFs using
-PyMuPDF (``fitz``). Each page is represented as a graph of blocks, lines,
-and spans that expose bounding boxes, font metadata, and reading order. The
-resulting structure feeds subsequent layout analysis, selective LayoutParser
-routing, repair passes, and chunking.
-
-The implementation intentionally keeps the dependency surface minimal: it is
-safe to import even when PyMuPDF is unavailable, raising a clear error only
-when parsing is attempted. This enables unit tests to stub the extractor
-without importing heavy native extensions.
-"""
+"""PyMuPDF-first PDF parser emitting detailed page graphs with header/footer suppression."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -30,7 +20,6 @@ except Exception:  # pragma: no cover - handled gracefully at runtime
 
 # PyMuPDF encodes superscripts / subscripts via the second bit of ``flags``.
 _SUPERSCRIPT_FLAG = 1 << 1
-
 
 BBox = Tuple[float, float, float, float]
 
@@ -162,6 +151,65 @@ def _normalise_text(text: str) -> str:
     return stripped.strip("\n")
 
 
+def _block_zone(block: PDFBlock, page_height: float) -> str:
+    if page_height <= 0:
+        return "body"
+    centre_y = (block.bbox[1] + block.bbox[3]) / 2.0
+    top_threshold = page_height * 0.12
+    bottom_threshold = page_height * 0.88
+    if centre_y <= top_threshold:
+        return "header"
+    if centre_y >= bottom_threshold:
+        return "footer"
+    return "body"
+
+
+def _normalise_header_footer_text(text: str) -> str:
+    cleaned = re.sub(r"\d+", "#", text)
+    cleaned = re.sub(r"[^A-Za-z#]+", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip().lower()
+
+
+def _compute_line_metadata(line: PDFLine) -> Dict[str, float]:
+    text = line.text.strip()
+    length = len(text)
+    digit_count = sum(ch.isdigit() for ch in text)
+    bullet = 1 if text[:2].strip().startswith(("-", "*", "•")) else 0
+    punctuation = sum(ch in {";", ":", "|", "-", "/"} for ch in text)
+    return {
+        "length": float(length),
+        "digit_ratio": float(digit_count) / max(length, 1),
+        "bullet": float(bullet),
+        "punctuation_ratio": float(punctuation) / max(length, 1),
+    }
+
+
+def _enrich_block_statistics(block: PDFBlock, page_height: float) -> None:
+    """Populate derived metrics used by downstream heuristics."""
+
+    if not block.lines:
+        block.metadata["line_density"] = 0.0
+        return
+    lengths: List[float] = []
+    digit_ratios: List[float] = []
+    bullets: List[float] = []
+    punct_ratios: List[float] = []
+    for line in block.lines:
+        meta = _compute_line_metadata(line)
+        lengths.append(meta["length"])
+        digit_ratios.append(meta["digit_ratio"])
+        bullets.append(meta["bullet"])
+        punct_ratios.append(meta["punctuation_ratio"])
+    if lengths:
+        block.metadata["avg_line_chars"] = float(sum(lengths)) / len(lengths)
+        block.metadata["max_line_chars"] = max(lengths)
+    block.metadata["numeric_ratio"] = float(sum(digit_ratios)) / max(len(digit_ratios), 1)
+    block.metadata["bullet_ratio"] = float(sum(bullets)) / max(len(bullets), 1)
+    block.metadata["punct_ratio"] = float(sum(punct_ratios)) / max(len(punct_ratios), 1)
+    block.metadata["line_density"] = len(block.lines) / max(block.height, 1.0)
+    block.metadata["page_line_density"] = len(block.lines) / max(page_height, 1.0)
+
+
 def _infer_class_hint(block: PDFBlock, page_width: float) -> str:
     """Rudimentary structural hint used before LayoutParser refinement."""
 
@@ -184,48 +232,12 @@ def _infer_class_hint(block: PDFBlock, page_width: float) -> str:
     return "prose"
 
 
-def _compute_line_metadata(line: PDFLine) -> Dict[str, float]:
-    text = line.text.strip()
-    length = len(text)
-    digit_count = sum(ch.isdigit() for ch in text)
-    bullet = 1 if text[:2].strip().startswith(("-", "*", "•")) else 0
-    punctuation = sum(ch in {";", ":", "|", "-", "/"} for ch in text)
-    return {
-        "length": float(length),
-        "digit_ratio": float(digit_count) / max(length, 1),
-        "bullet": float(bullet),
-        "punctuation_ratio": float(punctuation) / max(length, 1),
-    }
-
-
-def _enrich_block_statistics(block: PDFBlock) -> None:
-    """Populate derived metrics used by downstream heuristics."""
-
-    if not block.lines:
-        return
-    lengths: List[float] = []
-    digit_ratios: List[float] = []
-    bullets: List[float] = []
-    punct_ratios: List[float] = []
-    for line in block.lines:
-        meta = _compute_line_metadata(line)
-        lengths.append(meta["length"])
-        digit_ratios.append(meta["digit_ratio"])
-        bullets.append(meta["bullet"])
-        punct_ratios.append(meta["punctuation_ratio"])
-    if lengths:
-        block.metadata["avg_line_chars"] = float(sum(lengths)) / len(lengths)
-        block.metadata["max_line_chars"] = max(lengths)
-    block.metadata["numeric_ratio"] = float(sum(digit_ratios)) / max(len(digit_ratios), 1)
-    block.metadata["bullet_ratio"] = float(sum(bullets)) / max(len(bullets), 1)
-    block.metadata["punct_ratio"] = float(sum(punct_ratios)) / max(len(punct_ratios), 1)
-
-
 def _parse_blocks(
     *,
     page_dict: Dict[str, Any],
     page_number: int,
     page_width: float,
+    page_height: float,
     char_offset: int,
 ) -> Tuple[List[PDFBlock], int]:
     blocks: List[PDFBlock] = []
@@ -285,17 +297,98 @@ def _parse_blocks(
             block.metadata["char_density"] = (
                 float(text_len) / max(block.area, 1.0) if block.area > 0 else 0.0
             )
-            _enrich_block_statistics(block)
+            block.metadata["zone"] = _block_zone(block, page_height)
+            _enrich_block_statistics(block, page_height)
             block.class_hint = _infer_class_hint(block, page_width)
             block.char_start = current_offset
             current_offset += text_len
             block.char_end = current_offset
             current_offset += 1  # guard gap between blocks for downstream offsets
             text_blocks += 1
+        else:
+            block.metadata["zone"] = _block_zone(block, page_height)
+            block.char_start = current_offset
+            block.char_end = current_offset
         blocks.append(block)
 
     logger.debug("Page %d extracted %d blocks (%d text)", page_number, len(blocks), text_blocks)
     return blocks, current_offset
+
+
+def _collect_repeating_headers_footers(pages: List[PageGraph]) -> Dict[int, Dict[str, str]]:
+    """Return block_ids keyed by page that should be treated as headers/footers."""
+
+    patterns: Dict[str, Dict[str, List[Tuple[int, PDFBlock]]]] = {
+        "header": defaultdict(list),
+        "footer": defaultdict(list),
+    }
+    for page in pages:
+        for block in page.blocks:
+            if not block.is_text or not block.text.strip():
+                continue
+            zone = block.metadata.get("zone", "body")
+            if zone not in patterns:
+                continue
+            normalised = _normalise_header_footer_text(block.text)
+            if len(normalised) < 3:
+                continue
+            patterns[zone][normalised].append((page.page_number, block))
+
+    flagged: Dict[int, Dict[str, str]] = defaultdict(dict)
+    if not pages:
+        return flagged
+    page_count = len(pages)
+    min_occurrences = 2 if page_count < 5 else 3
+    threshold_ratio = 0.45 if page_count >= 5 else 0.6
+
+    for zone, entries in patterns.items():
+        for _, blocks in entries.items():
+            unique_pages = {page_number for page_number, _ in blocks}
+            if len(unique_pages) < min_occurrences:
+                continue
+            if len(unique_pages) / page_count < threshold_ratio:
+                continue
+            for page_number, block in blocks:
+                flagged[page_number][block.block_id] = zone
+    return flagged
+
+
+def _suppress_headers_footers(pages: List[PageGraph], flagged: Dict[int, Dict[str, str]]) -> int:
+    suppressed = 0
+    for page in pages:
+        page_flags = flagged.get(page.page_number, {})
+        if not page_flags:
+            continue
+        for block in page.blocks:
+            zone = page_flags.get(block.block_id)
+            if not zone:
+                continue
+            if block.text:
+                suppressed += 1
+            block.metadata["is_header_footer"] = True
+            block.metadata["header_footer_type"] = zone
+            block.metadata["suppressed"] = True
+            block.text = ""
+            block.lines.clear()
+            block.metadata["char_count"] = 0
+            block.char_end = block.char_start
+    return suppressed
+
+
+def _recompute_document_offsets(pages: List[PageGraph]) -> int:
+    offset = 0
+    for page in pages:
+        page.char_start = offset
+        for block in page.blocks:
+            block.char_start = offset
+            text_len = len(block.text) if block.is_text else 0
+            block.char_end = block.char_start + text_len
+            if block.is_text and text_len:
+                offset = block.char_end + 1
+            else:
+                offset = block.char_end
+        page.char_end = offset
+    return offset
 
 
 def parse_pdf_with_pymupdf(
@@ -327,6 +420,7 @@ def parse_pdf_with_pymupdf(
                 page_dict=text_dict,
                 page_number=page_number,
                 page_width=page_width,
+                page_height=page_height,
                 char_offset=char_offset,
             )
             char_start = char_offset
@@ -347,16 +441,24 @@ def parse_pdf_with_pymupdf(
     finally:
         document.close()
 
+    flagged = _collect_repeating_headers_footers(page_graphs)
+    if flagged:
+        suppressed = _suppress_headers_footers(page_graphs, flagged)
+        if suppressed:
+            logger.debug("Suppressed %d repeating header/footer blocks", suppressed)
+        total_chars = _recompute_document_offsets(page_graphs)
+    else:
+        total_chars = page_graphs[-1].char_end if page_graphs else 0
+
     metadata = {
         "page_count": len(page_graphs),
         "file_name": pdf_path.name,
     }
-    char_count = page_graphs[-1].char_end if page_graphs else 0
     return DocumentGraph(
         doc_id=resolved_doc_id,
         file_path=str(pdf_path),
         pages=page_graphs,
-        char_count=char_count,
+        char_count=total_chars,
         metadata=metadata,
     )
 

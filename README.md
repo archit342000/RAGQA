@@ -12,7 +12,8 @@ anchored for citation.
    pip install -r requirements.txt
    # Optional heavy extras used by the layout pipeline
    pip install "PyMuPDF==1.24.*" "pdfplumber==0.11.*" "camelot-py[cv]==0.11.*" "ocrmypdf==16.*" \
-     "layoutparser==0.3.4" "torch==2.3.*" "detectron2==0.6" "sentence-transformers==2.7.*" rapidfuzz==3.* scikit-image
+     "layoutparser==0.3.4" "torch==2.3.*" "detectron2==0.6" "sentence-transformers==2.7.*" "spacy==3.7.*" rapidfuzz==3.* scikit-image
+   python -m spacy download en_core_web_sm
    ```
 2. Run the Spaces-oriented demo locally:
    ```bash
@@ -60,25 +61,28 @@ reads the following variables (defaults in parentheses):
 The updated `pipeline/` package orchestrates a multi-stage PDF workflow designed for robust mixed-layout parsing:
 
 1. **Ingestion (`pipeline.ingest.pdf_parser`)** – PyMuPDF extracts spans, lines, fonts, and bounding boxes per page, emitting a
-   structured page graph that preserves block metadata (font statistics, numeric ratios, bullet density, etc.).
+   structured page graph that preserves block metadata (font statistics, numeric ratios, bullet density, etc.) while suppressing
+   repeating headers/footers via cross-page heuristics.
 2. **Layout Signals (`pipeline.layout.signals`)** – Nine robust signals are computed per page (CIS, OGR, BXS, DAS, FVS, ROJ, TFI,
    MSA, FNL). Values are normalised to [0, 1] via the median/IQR of the first ten pages before a weighted page score is derived.
 3. **Routing (`pipeline.layout.router`)** – Pages are queued for LayoutParser when the score ≥0.55 or any of the hard triggers
    fire (dense graphics overlap, table intrusions, column flips, repair loop failures). Neighbour pages with score ≥0.50 are
    included while respecting the ≤30% budget (with a contiguous +5 page overflow allowance).
-4. **Layout Fusion (`pipeline.layout.lp_fuser`)** – LayoutParser detections (PubLayNet/PRIMA/DocBank) are fused with PyMuPDF
+4. **Auxiliary Detection (`pipeline.layout.aux_detection`, `pipeline.layout.lp_locator`)** – Lexical, geometric, and style cues
+   isolate captions, callouts, and footnotes; selective LayoutParser runs localise dense regions for figure/table pairing.
+5. **Layout Fusion (`pipeline.layout.lp_fuser`)** – LayoutParser detections (PubLayNet/PRIMA/DocBank) are fused with PyMuPDF
    blocks using IoU≥0.3. Auxiliary regions (lists, tables, figures, titles off-grid) are stored separately while prose blocks are
-   ordered using detected regions and column threading. Anchor markers are injected at the closest preceding sentence to preserve
-   references to auxiliary material.
-5. **Repair (`pipeline.repair.repair_pass`)** – Adjacent main-flow blocks are stitched when embedding cosine ≥0.80, guarded
+   ordered using detected regions and column threading.
+6. **Threading (`pipeline.threading.threader`, `pipeline.repair.dehyphenate`, `pipeline.audit.thread_audit`)** – Two-page lookahead, delayed anchoring queues, and cross-page dehyphenation ensure auxiliaries land on sentence/paragraph boundaries without breaking header/lead-paragraph pairs. Anchors are audited post-threading to guarantee legal placement before downstream chunking.
+7. **Repair (`pipeline.repair.repair_pass`)** – Adjacent main-flow blocks are stitched when embedding cosine ≥0.80, guarded
    against over-merging across columns with large Δy. Footnotes are linked via superscript markers and retained as separate,
    anchored blocks. A failure counter is returned so the router can escalate LayoutParser coverage if stitching stalls.
-6. **Chunking (`pipeline.chunking.chunker`)** – Prose targets ~500 tokens (180–700 bounds, 80-token overlap) with semantic splits
+8. **Chunking (`pipeline.chunking.chunker`)** – Prose targets ~500 tokens (180–700 bounds, 80-token overlap) with semantic splits
    when sections exceed 600 tokens and sentence-level Δcos >0.15. Procedures respect 250–350 token windows with 40-token overlap.
    Tables are sharded into 6–12 row ranges with duplicated headers and `col:value` flattening, and at most one auxiliary block is
    appended to a chunk when cosine similarity ≥0.55.
-7. **Telemetry (`pipeline.telemetry.metrics`)** – Collects LP utilisation ratios, latency per page, score distributions, top-two
-   signals per routed page, interleave error rates, repair merge/split percentages, and retrieval deltas (Hit@K/MRR).
+9. **Telemetry (`pipeline.telemetry.metrics`)** – Collects LP utilisation ratios, latency per page, score distributions, top-two
+   signals per routed page, interleave error rates, repair merge/split percentages, threading queue metrics, and retrieval deltas (Hit@K/MRR).
 
 ### Chunking Metadata
 
