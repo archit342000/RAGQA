@@ -42,13 +42,13 @@ def _detect_triggers(
 ) -> List[str]:
     signal = signals[idx]
     triggers: List[str] = []
-    normalized = signal.normalized
+    raw = signal.raw
     extras = signal.extras
-    if normalized["OGR"] >= 0.35 and normalized["BXS"] >= 0.25:
+    if raw["OGR"] >= 0.35 and raw["BXS"] >= 0.25:
         triggers.append("T1")
     if extras.table_overlap_ratio > 0.20:
         triggers.append("T2")
-    if normalized["CIS"] >= 0.45:
+    if raw["CIS"] >= 0.45:
         prev_columns = signals[idx - 1].extras.column_count if idx > 0 else extras.column_count
         next_columns = signals[idx + 1].extras.column_count if idx + 1 < len(signals) else extras.column_count
         if prev_columns != extras.column_count or next_columns != extras.column_count:
