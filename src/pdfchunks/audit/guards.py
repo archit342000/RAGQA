@@ -44,7 +44,10 @@ def _assert_no_aux_in_main(units: Sequence[ThreadUnit]) -> None:
 def _assert_aux_after_lead(units: Sequence[ThreadUnit]) -> None:
     lead_seen: Dict[int, bool] = defaultdict(bool)
     for unit in units:
-        if unit.emit_phase == 0 and unit.para_seq > 0:
+        if unit.emit_phase == 0:
+            # Mark the section as having emitted its lead paragraph as soon as the
+            # first MAIN sentence (para_seq == 0) appears. Subsequent MAIN content
+            # keeps the flag true.
             lead_seen[unit.section_seq] = True
         if unit.emit_phase == 1 and not lead_seen[unit.section_seq]:
             raise AssertionError("AUX emitted before section lead paragraph")
