@@ -110,6 +110,7 @@ class _Sentencizer:
 class SectionState:
     section_id: str
     level: int
+    section_seq: int = 0
     queue: List[_PendingAux] = field(default_factory=list)
     last_block: Optional[FusedBlock] = None
     heading_block_id: Optional[str] = None
@@ -301,9 +302,18 @@ class Threader:
         detections = self._aux_records(document, page_signals, body_font)
 
         pdf_lookup = {block.block_id: block for block in document.iter_blocks()}
+        section_seq_by_id: Dict[str, int] = {}
+        for block in document.iter_blocks():
+            section_id = str(block.metadata.get("section_id") or "0")
+            try:
+                section_seq = int(block.metadata.get("section_seq") or 0)
+            except (TypeError, ValueError):
+                continue
+            if section_id not in section_seq_by_id or section_seq_by_id[section_id] == 0:
+                section_seq_by_id[section_id] = section_seq
 
         section_states: Dict[str, SectionState] = {}
-        root_state = SectionState(section_id="0", level=0)
+        root_state = SectionState(section_id="0", level=0, section_seq=section_seq_by_id.get("0", 0))
         section_states[root_state.section_id] = root_state
         section_stack: List[SectionState] = [root_state]
 
@@ -335,6 +345,7 @@ class Threader:
                             aux.metadata["is_footnote"] = True
                         if record.category:
                             aux.aux_category = aux.aux_category or record.category
+                    owner_section_seq = record.owner_section_seq if record else None
                     pending = _PendingAux(aux=aux, record=record)
                     owner_section = (
                         (record.owner_section_id if record else None)
@@ -344,11 +355,16 @@ class Threader:
                     pending.section_id = owner_section
                     pending.adjacent_to_figure = bool(record.adjacent_to_figure if record else False)
                     aux.metadata["owner_section_id"] = owner_section
+                    if owner_section_seq is None:
+                        owner_section_seq = section_seq_by_id.get(owner_section)
+                    if owner_section_seq is not None:
+                        aux.metadata["owner_section_seq"] = owner_section_seq
                     state = section_states.get(owner_section)
                     if state is None:
                         state = SectionState(
                             section_id=owner_section,
                             level=section_stack[-1].level if section_stack else 0,
+                            section_seq=section_seq_by_id.get(owner_section, 0),
                         )
                         section_states[owner_section] = state
                     state.queue.append(pending)
@@ -361,11 +377,17 @@ class Threader:
                 for aux in page.auxiliaries:
                     owner_section = str(aux.metadata.get("owner_section_id") or section_stack[-1].section_id)
                     pending = _PendingAux(aux=aux, record=None, section_id=owner_section)
+                    owner_section_seq = aux.metadata.get("owner_section_seq")
+                    if owner_section_seq is None:
+                        owner_section_seq = section_seq_by_id.get(owner_section)
+                        if owner_section_seq is not None:
+                            aux.metadata["owner_section_seq"] = owner_section_seq
                     state = section_states.get(owner_section)
                     if state is None:
                         state = SectionState(
                             section_id=owner_section,
                             level=section_stack[-1].level if section_stack else 0,
+                            section_seq=section_seq_by_id.get(owner_section, 0),
                         )
                         section_states[owner_section] = state
                     state.queue.append(pending)
@@ -387,6 +409,10 @@ class Threader:
                         block.metadata["keep_with_next"] = bool(source.metadata["keep_with_next"])
                     if "paragraph_id" in source.metadata:
                         block.metadata["paragraph_id"] = source.metadata["paragraph_id"]
+                    if "section_seq" in source.metadata:
+                        block.metadata["section_seq"] = source.metadata["section_seq"]
+                    if "para_seq" in source.metadata:
+                        block.metadata["para_seq"] = source.metadata["para_seq"]
                 else:
                     meta_section_id = section_stack[-1].section_id
                     meta_level = section_stack[-1].level
@@ -395,16 +421,26 @@ class Threader:
                 block.metadata["section_id"] = meta_section_id
                 block.metadata["section_level"] = meta_level
                 block.metadata["is_heading"] = is_heading
+                if meta_section_id in section_seq_by_id:
+                    block.metadata["section_seq"] = section_seq_by_id[meta_section_id]
+                else:
+                    block.metadata.setdefault("section_seq", 0)
+                block.metadata.setdefault("para_seq", 0)
 
                 if is_heading and meta_level:
                     self._close_sections(section_stack, meta_level, report, last_block)
                     state = section_states.get(meta_section_id)
                     if state is None:
-                        state = SectionState(section_id=meta_section_id, level=meta_level)
+                        state = SectionState(
+                            section_id=meta_section_id,
+                            level=meta_level,
+                            section_seq=section_seq_by_id.get(meta_section_id, 0),
+                        )
                         section_states[meta_section_id] = state
                     else:
                         state.level = meta_level
                         state.last_block = None
+                        state.section_seq = section_seq_by_id.get(meta_section_id, state.section_seq)
                     state.heading_block_id = block.block_id
                     state.lead_block_id = None
                     state.paragraphs_seen = 0
@@ -412,6 +448,9 @@ class Threader:
                     current_state = state
                 else:
                     current_state = section_stack[-1]
+                    current_state.section_seq = section_seq_by_id.get(
+                        current_state.section_id, current_state.section_seq
+                    )
                     if current_state.section_id != meta_section_id:
                         existing = None
                         for candidate in reversed(section_stack):
@@ -431,6 +470,7 @@ class Threader:
                                 state = SectionState(
                                     section_id=meta_section_id,
                                     level=current_state.level,
+                                    section_seq=section_seq_by_id.get(meta_section_id, 0),
                                 )
                                 section_states[meta_section_id] = state
                             section_stack.append(state)

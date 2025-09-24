@@ -79,6 +79,7 @@ class AuxBlockRecord:
     is_caption: bool = False
     is_footnote: bool = False
     owner_section_id: Optional[str] = None
+    owner_section_seq: Optional[int] = None
     adjacent_to_figure: bool = False
     references: List[str] = field(default_factory=list)
 
@@ -274,11 +275,40 @@ def detect_auxiliary_blocks(
         elif off_grid or centred:
             category = "callout"
 
-        owner_section = None
+        owner_section_id = None
+        owner_section_seq = None
         if section_map and block.block_id in section_map:
             owner_section = section_map[block.block_id]
-        else:
-            owner_section = block.metadata.get("section_id")
+            if isinstance(owner_section, tuple) and len(owner_section) == 2:
+                owner_section_id = str(owner_section[0]) if owner_section[0] is not None else None
+                try:
+                    owner_section_seq = int(owner_section[1]) if owner_section[1] is not None else None
+                except (TypeError, ValueError):
+                    owner_section_seq = None
+            elif isinstance(owner_section, dict):
+                owner_section_id = owner_section.get("section_id")
+                try:
+                    owner_section_seq = (
+                        int(owner_section.get("section_seq"))
+                        if owner_section.get("section_seq") is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    owner_section_seq = None
+            else:
+                owner_section_id = str(owner_section) if owner_section is not None else None
+        if owner_section_id is None:
+            meta_section = block.metadata.get("section_id")
+            owner_section_id = str(meta_section) if meta_section is not None else None
+        if owner_section_seq is None:
+            try:
+                owner_section_seq = (
+                    int(block.metadata.get("section_seq"))
+                    if block.metadata.get("section_seq") is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                owner_section_seq = None
 
         references = []
         footnote_refs = block.metadata.get("footnote_refs")
@@ -294,12 +324,15 @@ def detect_auxiliary_blocks(
             anchor_hint="section-end",
             is_caption=is_caption,
             is_footnote=is_footnote,
-            owner_section_id=str(owner_section) if owner_section else None,
+            owner_section_id=owner_section_id,
+            owner_section_seq=owner_section_seq,
             adjacent_to_figure=nearest_bbox is not None,
             references=references,
         )
         result[block.block_id] = record
         block.metadata["owner_section_id"] = record.owner_section_id
+        if record.owner_section_seq is not None:
+            block.metadata["owner_section_seq"] = record.owner_section_seq
         if nearest_bbox is not None:
             caption_links[block.block_id] = nearest_bbox
 

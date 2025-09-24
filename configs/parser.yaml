@@ -22,3 +22,5 @@ aux_detection:
     - "Let's"
     - "Let’s"
     - "Keywords"
+serializer:
+  log_preview: 12

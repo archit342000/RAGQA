@@ -452,28 +452,46 @@ def _assign_section_metadata(pages: List[PageGraph]) -> None:
     body_font = _estimate_body_font(pages)
     tracker = _SectionCounter()
     pending_lead: Optional[Tuple[str, int]] = None
+    section_seq_counter = 0
+    section_seq_map: Dict[str, int] = {"0": 0}
+    paragraph_counters: Dict[int, int] = defaultdict(int)
+
+    def _section_seq(section_id: str) -> int:
+        nonlocal section_seq_counter
+        if section_id not in section_seq_map:
+            section_seq_counter += 1
+            section_seq_map[section_id] = section_seq_counter
+        return section_seq_map[section_id]
     for page in pages:
         for block in page.blocks:
-            block.metadata.setdefault("section_id", tracker.current())
+            current_section = tracker.current()
+            block.metadata.setdefault("section_id", current_section)
             block.metadata.setdefault("section_level", tracker.level())
             block.metadata.setdefault("section_lead", False)
             block.metadata.setdefault("keep_with_next", False)
+            block.metadata.setdefault("section_seq", _section_seq(current_section))
+            block.metadata.setdefault("para_seq", 0)
             if not block.is_text or not block.text.strip() or block.metadata.get("suppressed"):
                 continue
             level = _heading_level(block, body_font)
             if level:
                 section_id = tracker.enter(level)
+                section_seq = _section_seq(section_id)
                 block.metadata["section_id"] = section_id
                 block.metadata["section_level"] = level
+                block.metadata["section_seq"] = section_seq
                 block.metadata["is_heading"] = True
                 block.metadata["section_lead"] = False
                 block.metadata["keep_with_next"] = False
+                block.metadata["para_seq"] = 0
                 pending_lead = (section_id, level)
                 continue
 
             block.metadata["is_heading"] = False
             block.metadata["section_level"] = tracker.level()
             block.metadata["section_id"] = tracker.current()
+            section_seq = _section_seq(tracker.current())
+            block.metadata["section_seq"] = section_seq
             if pending_lead and pending_lead[0] == tracker.current():
                 block.metadata["section_lead"] = True
                 block.metadata["keep_with_next"] = True
@@ -482,6 +500,8 @@ def _assign_section_metadata(pages: List[PageGraph]) -> None:
                 block.metadata["section_lead"] = False
                 block.metadata["keep_with_next"] = False
             block.metadata.setdefault("paragraph_id", block.block_id)
+            paragraph_counters[section_seq] += 1
+            block.metadata["para_seq"] = paragraph_counters[section_seq]
 
 
 def parse_pdf_with_pymupdf(

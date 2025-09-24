@@ -74,18 +74,11 @@ The updated `pipeline/` package orchestrates a multi-stage PDF workflow designed
 5. **Layout Fusion (`pipeline.layout.lp_fuser`)** – LayoutParser detections (PubLayNet/PRIMA/DocBank) are fused with PyMuPDF
    blocks using IoU≥0.3. Auxiliary regions (lists, tables, figures, titles off-grid) are stored separately while prose blocks are
    ordered using detected regions and column threading.
-6. **Threading (`pipeline.threading.threader`, `pipeline.repair.dehyphenate`, `pipeline.audit.thread_audit`)** – Two-page lookahead, per-section auxiliary queues, and cross-page dehyphenation keep section text contiguous while banning anchors between headers and their lead paragraphs. Queued auxiliaries are flushed only when a section closes (or the document ends); audits repair any stragglers by relocating anchors to the nearest legal boundary.
-7. **Repair (`pipeline.repair.repair_pass`)** – Adjacent main-flow blocks are stitched when embedding cosine ≥0.80, guarded
-   against over-merging across columns with large Δy. Footnotes are linked via superscript markers and retained as separate,
-   anchored blocks. A failure counter is returned so the router can escalate LayoutParser coverage if stitching stalls.
-8. **Chunking (`pipeline.chunking.chunker`)** – Prose targets ~500 tokens (180–700 bounds, 80-token overlap) with semantic splits
-   when sections exceed 600 tokens and sentence-level Δcos >0.15. Procedures respect 250–350 token windows with 40-token overlap.
-   Main-flow chunks are emitted section by section; once a section closes, captions, callouts, footnotes, and other auxiliaries are
-   rendered as standalone chunks linked via metadata. Tables are sharded into 6–12 row ranges with duplicated headers and `col:value`
-   flattening.
-9. **Telemetry (`pipeline.telemetry.metrics`)** – Collects LP utilisation ratios, latency per page, score distributions, top-two
-   signals per routed page, interleave error rates, repair merge/split percentages, threading queue metrics, and retrieval deltas (Hit@K/MRR).
-
+6. **Threading (`pipeline.threading.threader`, `pipeline.threading.transactions`, `pipeline.repair.dehyphenate`, `pipeline.audit.thread_audit`)** – Two-page lookahead, per-section transaction queues, and cross-page dehyphenation keep section text contiguous while banning anchors between headers and their lead paragraphs. Auxiliaries inherit section ownership early and remain queued until the section is sealed.
+7. **Serialization (`pipeline.serialize.serializer`, `pipeline.audit.order_guards`)** – Sentence-level units and auxiliary blocks are emitted with global order keys `(doc_id, section_seq, para_seq, sent_seq, emit_phase)`. A single serializer stream guarantees monotonic ordering, defers auxiliary flushes to post-section phases, and enforces guardrails so emit phases never regress.
+8. **Repair (`pipeline.repair.repair_pass`)** – Adjacent main-flow blocks are stitched when embedding cosine ≥0.80, guarded against over-merging across columns with large Δy. Footnotes are linked via superscript markers and retained as separate, anchored blocks. A failure counter is returned so the router can escalate LayoutParser coverage if stitching stalls.
+9. **Chunking (`pipeline.chunking.chunker`)** – Prose targets ~500 tokens (180–700 bounds, 80-token overlap) with semantic splits when sections exceed 600 tokens and sentence-level Δcos >0.15. Procedures respect 250–350 token windows with 40-token overlap. Main-flow chunks are assembled strictly from `emit_phase=0` units; once a section closes, captions, callouts, footnotes, and other auxiliaries are rendered as standalone chunks linked via metadata. Tables are sharded into 6–12 row ranges with duplicated headers and `col:value` flattening.
+10. **Telemetry (`pipeline.telemetry.metrics`)** – Collects LP utilisation ratios, latency per page, score distributions, top-two signals per routed page, interleave error rates, repair merge/split percentages, threading queue metrics, and retrieval deltas (Hit@K/MRR).
 ### Chunking Metadata
 
 Each emitted chunk records:
@@ -93,11 +86,12 @@ Each emitted chunk records:
 - `doc_id`, `page_start`, `page_end`
 - Character offsets (`char_start`, `char_end`)
 - Source block identifiers and types
-- Section metadata (`section_id`) and ordered `para_ids`
+- Section metadata (`section_id`, `section_seq`) and ordered `para_ids`
 - Region type counts
 - Table row ranges (for structured/table chunks)
 - Boolean `has_anchor_refs` flag when inline anchors are inserted
-- Auxiliary chunk details (`aux_kind`, `owner_section_id`, `linked_figure_id`, `references`)
+- Auxiliary chunk details (`aux_kind`, `owner_section_id`, `owner_section_seq`, `linked_figure_id`, `references`)
+- Emit-phase awareness (main flow first, auxiliaries post-section)
 
 Parser and threading thresholds (auxiliary lexicon, font/width tolerances, optional figure-adjacent anchoring) are configurable via `configs/parser.yaml`.
 
