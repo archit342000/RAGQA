@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -128,7 +128,7 @@ class LayoutParserEngine:
         for page_number in page_numbers:
             key = (document.doc_id, page_number, model, dpi)
             if key in self.cache:
-                outputs[page_number] = [LPRegion(**region.__dict__) for region in self.cache[key]]
+                outputs[page_number] = [replace(region) for region in self.cache[key]]
                 continue
             page = document.get_page(page_number)
             try:
@@ -137,7 +137,7 @@ class LayoutParserEngine:
                 logger.debug("LayoutParser unavailable for page %s: %s", page_number, exc)
                 regions = self._heuristic_regions(page)
             self.cache[key] = tuple(regions)
-            outputs[page_number] = [LPRegion(**region.__dict__) for region in regions]
+            outputs[page_number] = [replace(region) for region in regions]
         return outputs
 
 
