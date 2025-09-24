@@ -46,6 +46,25 @@ class SectionTransaction:
         self.next_para_seq = value + 1
         return value
 
+    def ensure_paragraph_seq(self, para_seq: int, *, is_heading: bool = False) -> int:
+        """Normalise ``para_seq`` so emitted units remain monotonic."""
+
+        if para_seq > 0:
+            self.record_paragraph(para_seq)
+            return para_seq
+
+        if is_heading and self.last_para_seq == 0:
+            self.next_para_seq = max(self.next_para_seq, 1)
+            return 0
+
+        value = self.claim_aux_para_seq()
+        logger.debug(
+            "allocated fallback para_seq for section %s: %s",
+            self.section_seq,
+            value,
+        )
+        return value
+
 
 class SectionTransactions:
     """Manage BEGIN/SEAL/FLUSH operations for section-scoped auxiliaries."""

@@ -126,7 +126,10 @@ class Serializer:
             para_seq = int(block.metadata.get("para_seq") or 0)
         except (TypeError, ValueError):
             para_seq = 0
-        txn.record_paragraph(para_seq)
+        para_seq = txn.ensure_paragraph_seq(
+            para_seq, is_heading=bool(block.metadata.get("is_heading"))
+        )
+        block.metadata["para_seq"] = para_seq
         sentences = _split_sentences(text)
         if not sentences:
             return []
