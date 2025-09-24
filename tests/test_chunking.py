@@ -141,6 +141,8 @@ def test_table_blocks_emit_table_chunks(monkeypatch: pytest.MonkeyPatch) -> None
     assert stats[doc_id]["tables"] == len(table_chunks)
     assert all(chunk.meta.get("aux_kind") == "table" for chunk in table_chunks)
     assert all(chunk.meta.get("section_id") == "1" for chunk in table_chunks)
+    assert all(chunk.text.startswith("<aux>") for chunk in table_chunks)
+    assert all(chunk.text.rstrip().endswith("</aux>") for chunk in table_chunks)
 
 
 def test_auxiliary_blocks_produce_aux_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,3 +187,5 @@ def test_auxiliary_blocks_produce_aux_chunks(monkeypatch: pytest.MonkeyPatch) ->
     assert aux_chunks, "Auxiliary blocks should yield dedicated chunks"
     assert all(chunk.meta.get("aux_kind") == "figure" for chunk in aux_chunks)
     assert stats[doc_id]["aux_attached"] == 0
+    assert all(chunk.text.startswith("<aux>") for chunk in aux_chunks)
+    assert all(chunk.text.rstrip().endswith("</aux>") for chunk in aux_chunks)

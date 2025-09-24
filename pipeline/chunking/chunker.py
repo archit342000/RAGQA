@@ -170,6 +170,18 @@ class DocumentChunker:
                 break
         return overlap, tokens
 
+    def _wrap_aux_text(self, text: str) -> str:
+        """Wrap auxiliary chunk text in <aux> tags if not already wrapped."""
+
+        trimmed = text.strip()
+        if not trimmed:
+            return "<aux></aux>"
+        if trimmed.startswith("<aux>") and trimmed.endswith("</aux>"):
+            return trimmed
+        if "\n" in trimmed:
+            return f"<aux>\n{trimmed}\n</aux>"
+        return f"<aux>{trimmed}</aux>"
+
     def _table_chunks(self, block: FusedBlock, doc_id: str, *, section_seq: Optional[int]) -> List[Chunk]:
         lines = [line.strip() for line in block.text.splitlines() if line.strip()]
         if not lines:
@@ -206,10 +218,11 @@ class DocumentChunker:
                 parts.append("Header: " + "; ".join(header_cols))
             for flat in flattened_rows:
                 parts.append(flat)
-            text = "\n".join(parts).strip()
-            if not text:
+            inner_text = "\n".join(parts).strip()
+            if not inner_text:
                 row_index += size
                 continue
+            text = self._wrap_aux_text(inner_text)
             token_count = self.tokenizer.count(text)
             metadata = {
                 "doc_id": doc_id,
@@ -248,6 +261,7 @@ class DocumentChunker:
         text = block.text.strip()
         if not text:
             return None
+        text = self._wrap_aux_text(text)
         token_count = self.tokenizer.count(text)
         references = block.metadata.get("references")
         if not isinstance(references, list):
