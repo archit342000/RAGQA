@@ -81,8 +81,11 @@ def assign_aux_ownership(assignments: Iterable[SectionAssignment]) -> List[Secti
         elif owner_seq == 0 and last_header_for_section:
             owner_seq = max(last_header_for_section)
 
-        if owner_seq not in sections_with_main and last_section_with_main is not None:
-            owner_seq = last_section_with_main
+        if owner_seq not in sections_with_main:
+            if last_section_with_main is not None:
+                owner_seq = last_section_with_main
+            elif owner_seq != 0:
+                owner_seq = 0
 
         final.append(
             SectionAssignment(label=label, section_seq=assignment.section_seq, owner_section_seq=owner_seq)

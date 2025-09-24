@@ -41,6 +41,7 @@ class TransactionManager:
         self._sections: Dict[int, SectionTransaction] = {}
         self._current_section: Optional[int] = None
         self.delayed_aux_flush: Dict[int, int] = defaultdict(int)
+        self._last_section_with_lead: Optional[int] = None
 
     def begin(self, section_seq: int, heading: Optional[SectionAssignment] = None) -> SectionTransaction:
         section = self._sections.get(section_seq)
@@ -57,11 +58,32 @@ class TransactionManager:
     def register_main(self, section_seq: int) -> SectionTransaction:
         section = self._sections.setdefault(section_seq, SectionTransaction(section_seq=section_seq))
         section.register_main()
+        self._last_section_with_lead = section_seq
         return section
 
     def enqueue_aux(self, assignment: SectionAssignment) -> None:
         owner_seq = assignment.owner_section_seq
         section = self._sections.setdefault(owner_seq, SectionTransaction(section_seq=owner_seq))
+
+        if not section.lead_paragraph_seen:
+            if owner_seq == 0:
+                section.lead_paragraph_seen = True
+            else:
+                fallback_seq = self._last_section_with_lead
+                if fallback_seq is None or fallback_seq == owner_seq:
+                    raise ValueError("AUX cannot appear before the lead paragraph in a section")
+                section = self._sections.setdefault(
+                    fallback_seq, SectionTransaction(section_seq=fallback_seq)
+                )
+                if not section.lead_paragraph_seen:
+                    section.lead_paragraph_seen = True
+                assignment = SectionAssignment(
+                    label=assignment.label,
+                    section_seq=assignment.section_seq,
+                    owner_section_seq=fallback_seq,
+                )
+                owner_seq = fallback_seq
+
         section.enqueue_aux(assignment)
         self.delayed_aux_flush[owner_seq] = len(section.aux_queue)
 
