@@ -46,6 +46,10 @@ def _make_doc(
             figure_overlap_ratio=0.0,
             dominant_font_size=12.0,
             footnote_block_ids=[],
+            superscript_spans=0,
+            total_line_count=25,
+            has_normal_density=True,
+            char_density=0.001,
         )
         raw = {name: 0.1 for name in _SIGNAL_NAMES}
         signals.append(PageLayoutSignals(page_number=page.page_number, raw=raw, normalized=raw, page_score=0.2, extras=extras))

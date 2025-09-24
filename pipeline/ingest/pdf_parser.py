@@ -28,6 +28,10 @@ except Exception:  # pragma: no cover - handled gracefully at runtime
     fitz = None  # type: ignore
 
 
+# PyMuPDF encodes superscripts / subscripts via the second bit of ``flags``.
+_SUPERSCRIPT_FLAG = 1 << 1
+
+
 BBox = Tuple[float, float, float, float]
 
 
@@ -242,6 +246,7 @@ def _parse_blocks(
         if block.is_text:
             font_weighted_total = 0.0
             font_weight_den = 0.0
+            superscript_chars = 0
             for line_dict in block_dict.get("lines", []):
                 spans: List[PDFSpan] = []
                 line_bbox = tuple(float(v) for v in line_dict.get("bbox", bbox_tuple))
@@ -264,6 +269,8 @@ def _parse_blocks(
                     weight = max(len(clean_text.strip()), 1)
                     font_weighted_total += span.font_size * weight
                     font_weight_den += weight
+                    if span.flags & _SUPERSCRIPT_FLAG:
+                        superscript_chars += sum(ch.isdigit() for ch in span.text)
                     block.dominant_fonts[span.font] = block.dominant_fonts.get(span.font, 0) + weight
                 if spans:
                     block.lines.append(PDFLine(spans=spans, bbox=line_bbox))
@@ -274,6 +281,10 @@ def _parse_blocks(
             block.metadata["char_count"] = text_len
             block.metadata["line_count"] = len(block.lines)
             block.metadata["span_count"] = sum(len(line.spans) for line in block.lines)
+            block.metadata["superscript_count"] = superscript_chars
+            block.metadata["char_density"] = (
+                float(text_len) / max(block.area, 1.0) if block.area > 0 else 0.0
+            )
             _enrich_block_statistics(block)
             block.class_hint = _infer_class_hint(block, page_width)
             block.char_start = current_offset

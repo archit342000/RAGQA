@@ -98,6 +98,10 @@ def _synthetic_pipeline_view(doc: ParsedDoc) -> Tuple[FusedDocument, List[PageLa
             figure_overlap_ratio=0.0,
             dominant_font_size=12.0,
             footnote_block_ids=[],
+            superscript_spans=0,
+            total_line_count=1,
+            has_normal_density=True,
+            char_density=0.001,
         )
         raw = {name: 0.0 for name in _SIGNAL_NAMES}
         normalized = {name: 0.0 for name in _SIGNAL_NAMES}

@@ -80,6 +80,10 @@ def test_parse_pdf_hybrid_pipeline_metadata(monkeypatch: pytest.MonkeyPatch, tmp
         figure_overlap_ratio=0.0,
         dominant_font_size=12.0,
         footnote_block_ids=[],
+        superscript_spans=0,
+        total_line_count=30,
+        has_normal_density=True,
+        char_density=0.001,
     )
     raw = {name: 0.1 for name in ("CIS", "OGR", "BXS", "DAS", "FVS", "ROJ", "TFI", "MSA", "FNL")}
     normalized = {**raw, "CIS": 0.65}
@@ -208,6 +212,10 @@ def test_hi_res_disabled_blocks_high_accuracy(monkeypatch: pytest.MonkeyPatch, t
         figure_overlap_ratio=0.0,
         dominant_font_size=12.0,
         footnote_block_ids=[],
+        superscript_spans=0,
+        total_line_count=20,
+        has_normal_density=True,
+        char_density=0.001,
     )
     raw = {name: 0.0 for name in ("CIS", "OGR", "BXS", "DAS", "FVS", "ROJ", "TFI", "MSA", "FNL")}
     signals = [PageLayoutSignals(page_number=1, raw=raw, normalized=raw, page_score=0.2, extras=extras)]
