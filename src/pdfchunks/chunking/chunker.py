@@ -22,6 +22,8 @@ class Chunk:
     para_range: Tuple[int, int]
     sent_range: Tuple[int, int]
     subtype: str | None = None
+    page_start: int = 0
+    page_end: int = 0
 
 
 class Chunker:
@@ -65,6 +67,7 @@ class Chunker:
                 end = min(len(units), start + 1)
                 tokens = sum(token_counts[start:end])
             selected = units[start:end]
+            page_start, page_end = self._page_span(selected)
             chunk_index += 1
             text = " ".join(unit.text for unit in selected)
             chunk = Chunk(
@@ -76,6 +79,8 @@ class Chunker:
                 token_count=self._token_len(text),
                 para_range=(selected[0].para_seq, selected[-1].para_seq),
                 sent_range=(selected[0].sent_seq, selected[-1].sent_seq),
+                page_start=page_start,
+                page_end=page_end,
             )
             chunks.append(chunk)
             if end >= len(units):
@@ -113,6 +118,7 @@ class Chunker:
             section_seq, subtype = current_key
             group_index[current_key] = group_index.get(current_key, 0) + 1
             text = "\n".join(unit.text for unit in buffer)
+            page_start, page_end = self._page_span(buffer)
             chunk = Chunk(
                 doc_id=doc_id,
                 chunk_id=f"{doc_id}-aux-{section_seq}-{group_index[current_key]}",
@@ -123,6 +129,8 @@ class Chunker:
                 para_range=(buffer[0].para_seq, buffer[-1].para_seq),
                 sent_range=(buffer[0].sent_seq, buffer[-1].sent_seq),
                 subtype=subtype,
+                page_start=page_start,
+                page_end=page_end,
             )
             chunks.append(chunk)
             buffer = []
@@ -144,4 +152,19 @@ class Chunker:
         if not text:
             return 0
         return len(text.split())
+
+    @staticmethod
+    def _page_span(units: Sequence[ThreadUnit]) -> Tuple[int, int]:
+        pages: List[int] = []
+        for unit in units:
+            for block_id in unit.block_ids:
+                try:
+                    page_str = block_id.split("-", 1)[0]
+                    page = int(page_str) + 1
+                except (ValueError, IndexError):
+                    continue
+                pages.append(page)
+        if not pages:
+            return 0, 0
+        return min(pages), max(pages)
 
