@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from html import escape
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Sequence
@@ -30,6 +31,12 @@ from typing import Dict, List, MutableMapping, Sequence
 import gradio as gr
 
 from env_loader import load_dotenv_once
+
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 from pdfchunks.driver import run_pipeline
 from pdfchunks.types import ParsedDoc, RunReport
 from retrieval import RetrievalConfig, build_indexes, retrieve
