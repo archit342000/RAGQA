@@ -68,6 +68,19 @@ _FIRST_PERSON_LEADERS = {
     "prefer",
     "plan",
 }
+_PLACEHOLDER_TOKENS = {
+    "someone",
+    "somebody",
+    "something",
+    "somewhere",
+    "sometime",
+    "somehow",
+}
+_META_REFERENCE_PATTERNS = (
+    r"\baccording to the (?:text|document|passage)\b",
+    r"\bas stated (?:in|by) the (?:text|document|passage)\b",
+    r"\bthe passage (?:states|says)\b",
+)
 _FIRST_PERSON_FOLLOWERS = {
     "am",
     "are",
@@ -142,6 +155,8 @@ def _violates_person_rules(question: str) -> bool:
             if prev_token in _ROMAN_NUMERAL_LEADERS:
                 continue
             return True
+    if any(token in _PLACEHOLDER_TOKENS for token in tokens):
+        return True
     return False
 
 
@@ -204,6 +219,9 @@ class SynthItem(BaseModel):
         normalized = value.strip()
         if _violates_person_rules(normalized):
             raise ValueError("question must be written in third person")
+        lowered = normalized.lower()
+        if any(re.search(pattern, lowered) for pattern in _META_REFERENCE_PATTERNS):
+            raise ValueError("question must not reference the source meta")
         return value
 
     @field_validator("wh")

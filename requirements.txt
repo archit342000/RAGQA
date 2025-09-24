@@ -25,3 +25,6 @@ pydantic>=2.7.0
 python-dotenv>=1.0.1
 tiktoken>=0.7.0
 rapidfuzz>=3.9.0
+PyMuPDF==1.24.9
+layoutparser==0.3.4
+scikit-image>=0.22
