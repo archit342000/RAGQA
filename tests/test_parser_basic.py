@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from chunking.types import Chunk
 from parser.cleaning import remove_headers_footers
 from parser.driver import parse_documents, parse_pdf, parse_text
 from parser.types import ParsedDoc, ParsedPage, RunReport
@@ -439,29 +440,57 @@ def test_parse_documents_no_skip_when_within_limit(monkeypatch: pytest.MonkeyPat
     assert not report.message
 
 
-def test_ui_hides_high_res_when_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """UI should react gracefully when High-Res is disabled via env flags."""
+def test_ui_uses_fixed_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """UI parsing should always rely on the fixed hybrid pipeline without prompts."""
 
-    monkeypatch.setenv("ENABLE_HI_RES", "false")
     monkeypatch.setenv("SHOW_DEBUG", "false")
 
     import app as app_module
 
     reload(app_module)
-    assert "High-Res" not in app_module._mode_choices()
 
     dummy_file = tmp_path / "sample.txt"
     dummy_file.write_text("content")
 
+    captured: Dict[str, object] = {}
+
     def fake_parse_documents(files, *, strategy_env=None):
+        captured["strategy_env"] = strategy_env
         doc = _build_stub_doc("doc", Path(files[0]).name, 1)
         report = RunReport(total_docs=1, total_pages=1, truncated=False, skipped_docs=[], message="")
         return [doc], report
 
+    def fake_chunk_documents(docs, *, mode=None, model_name=None):
+        captured["chunk_mode"] = mode
+        chunk = Chunk(
+            doc_id="doc",
+            doc_name="sample.txt",
+            page_start=1,
+            page_end=1,
+            section_title=None,
+            text="chunk text",
+            token_len=128,
+            meta={},
+        )
+        stats = {
+            "doc": {
+                "doc_name": "sample.txt",
+                "chunks": 1,
+                "avg_tokens": 128.0,
+                "mode": "semantic",
+                "tables": 0,
+                "aux_attached": 0,
+            }
+        }
+        return [chunk], stats
+
     monkeypatch.setattr(app_module, "parse_documents", fake_parse_documents)
+    monkeypatch.setattr(app_module, "chunk_documents", fake_chunk_documents)
 
-    state, _, _, chunk_text, status_text, _ = app_module.parse_batch([str(dummy_file)], "High-Res", "Fixed")
+    state, _, _, chunk_text, status_text, _ = app_module.parse_batch([str(dummy_file)])
 
-    assert "High-Res disabled" in status_text
+    assert captured.get("strategy_env") is None
+    assert captured.get("chunk_mode") is None
     assert state["chunks"]
-    assert chunk_text
+    assert chunk_text == "chunk text"
+    assert "chunks" in status_text

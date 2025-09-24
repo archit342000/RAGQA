@@ -5,8 +5,8 @@ Face Spaces-compatible UI. The page offers:
 
 * **Uploader** – accepts one or more PDF/TXT/MD files and streams them to the
   parser.
-* **Controls** – lets the user pick a parsing mode (fast/auto/high-res) while
-  hiding advanced tuning knobs behind environment variables.
+* **Controls** – exposes document upload and retrieval tuning while the hybrid
+  parser/chunker run with fixed configuration managed by the environment.
 * **Inspector** – shows available documents, renders individual pages, and,
   when enabled, surfaces an aggregated debug payload.
 * **Retriever** – allows operators to run lexical/semantic retrieval with a
@@ -45,22 +45,6 @@ logger = logging.getLogger(__name__)
 # helper is intentionally dependency-free so the Spaces build stays minimal.
 load_dotenv_once()
 
-# Mapping between user-facing parsing mode labels and the backend strategies
-# accepted by the parsing driver. The UI dropdown uses the keys, while the
-# driver expects the values.
-MODE_LABEL_TO_STRATEGY = {
-    "Fast": "fast",
-    "Auto": "auto",
-    "High-Res": "hi_res",
-}
-
-# Labels presented to the user for chunking strategies mapped to the internal
-# identifiers expected by the chunking pipeline.
-CHUNK_MODE_LABELS = {
-    "Semantic (recommended)": "semantic",
-    "Fixed": "fixed",
-}
-
 # Retrieval engine labels surfaced in the UI mapped to the engine keys consumed
 # by the retrieval driver, plus a helper reverse map for convenience.
 RETRIEVAL_LABEL_TO_KEY = {
@@ -76,14 +60,6 @@ RETRIEVAL_CFG = RetrievalConfig.from_env()
 DEFAULT_RETRIEVAL_LABEL = RETRIEVAL_KEY_TO_LABEL.get(RETRIEVAL_CFG.default_engine, "Semantic → Rerank")
 
 
-def _hi_res_enabled() -> bool:
-    """Return True when hi-res parsing is explicitly enabled via env."""
-
-    # The ENABLE_HI_RES flag defaults to false because hi-res parsing is
-    # GPU-intensive. The UI checks this before surfacing the option.
-    return os.getenv("ENABLE_HI_RES", "false").strip().lower() == "true"
-
-
 def _show_debug() -> bool:
     """Return True when developer debug output should be visible."""
 
@@ -96,28 +72,6 @@ def _gold_export_enabled() -> bool:
     """Return True when gold-set export helpers should be exposed."""
 
     return os.getenv("ENABLE_GOLD_EXPORT", "false").strip().lower() == "true"
-
-
-def _mode_choices() -> List[str]:
-    """List user-facing parsing options based on server capabilities."""
-
-    # Always provide Fast and Auto. Append High-Res only when explicitly
-    # permitted to avoid exposing a configuration that will immediately fail.
-    choices = ["Fast", "Auto"]
-    if _hi_res_enabled():
-        choices.append("High-Res")
-    return choices
-
-
-def _default_mode() -> str:
-    """Resolve the initial parsing mode selection from env defaults."""
-
-    # Read the strategy requested by the operator, convert it back into a UI
-    # label, and fall back to a safe default when the value is unrecognised.
-    env_default = os.getenv("UNSTRUCTURED_STRATEGY", "fast").strip().lower()
-    reverse_map = {v: k for k, v in MODE_LABEL_TO_STRATEGY.items()}
-    candidate = reverse_map.get(env_default, "Fast")
-    return candidate if candidate in _mode_choices() else "Fast"
 
 
 def _default_retrieval_label() -> str:
@@ -424,7 +378,7 @@ def _ensure_retrieval_state(
     return retrieval_state
 
 
-def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: bool = False):
+def parse_batch(files, *, full_output: bool = False):
     """Handle a UI request to parse documents and emit retrieval chunks."""
 
     # Validate the incoming file list to avoid calling the parser on empty
@@ -438,25 +392,14 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     if not file_paths:
         raise gr.Error("No readable files provided.")
 
-    # Resolve the parsing strategy, respecting server capabilities when hi-res
-    # parsing is not permitted.
-    strategy = MODE_LABEL_TO_STRATEGY.get(mode_label or "Fast", "fast")
-    status_lines: List[str] = []
-    if strategy == "hi_res" and not _hi_res_enabled():
-        status_lines.append("High-Res disabled by server configuration. Falling back to Fast mode.")
-        strategy = "fast"
-
     # Run the parser driver and collect the structured documents plus a run
     # report describing any warnings or skipped files.
-    docs, parse_report = parse_documents(file_paths, strategy_env=strategy)
+    docs, parse_report = parse_documents(file_paths)
 
-    # Invoke the chunking pipeline using the selected mode so the retrieval
-    # system receives consistent chunk structures.
-    requested_chunk_label = (
-        chunk_mode_label if chunk_mode_label in CHUNK_MODE_LABELS else "Semantic (recommended)"
-    )
-    chunk_mode = CHUNK_MODE_LABELS.get(requested_chunk_label, "semantic")
-    chunks, chunk_stats = chunk_documents(docs, mode=chunk_mode)
+    # Invoke the chunking pipeline using the fixed hybrid mode so the retrieval
+    # system receives consistent chunk structures across runs.
+    status_lines: List[str] = []
+    chunks, chunk_stats = chunk_documents(docs)
 
     parsed_docs_payload: List[Dict[str, object]] = []
     doc_status_lines: List[str] = []
@@ -549,8 +492,6 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     }
 
     status_lines.extend(doc_status_lines)
-    if docs:
-        status_lines.append(f"Chunking mode: {requested_chunk_label}")
 
     # Surface parser status messages immediately so the operator knows whether
     # documents were skipped or produced no chunks.
@@ -602,10 +543,10 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     )
 
 
-def parse_batch_ui(files, mode_label: str, chunk_mode_label: str):
+def parse_batch_ui(files):
     """UI wrapper returning the expanded set of outputs for Gradio."""
 
-    return parse_batch(files, mode_label, chunk_mode_label, full_output=True)
+    return parse_batch(files, full_output=True)
 
 
 def prepare_gold_inputs(state: Dict[str, object]) -> str:
@@ -807,9 +748,6 @@ def build_interface() -> gr.Blocks:
 
     # Resolve static dropdown defaults up-front so the layout code reads
     # linearly below.
-    mode_choices = _mode_choices()
-    default_mode = _default_mode()
-    chunk_mode_choices = list(CHUNK_MODE_LABELS.keys())
     debug_visible = _show_debug()
 
     with gr.Blocks(title="Document Parser Preview") as demo:
@@ -820,18 +758,6 @@ def build_interface() -> gr.Blocks:
                 file_types=[".pdf", ".txt", ".md"],
                 type="filepath",
                 file_count="multiple",
-            )
-            mode_input = gr.Dropdown(
-                choices=mode_choices,
-                value=default_mode,
-                label="Parsing mode",
-                allow_custom_value=False,
-            )
-            chunk_mode_input = gr.Dropdown(
-                choices=chunk_mode_choices,
-                value="Semantic (recommended)",
-                label="Chunking mode",
-                allow_custom_value=False,
             )
 
         parse_button = gr.Button("Parse documents")
@@ -873,7 +799,7 @@ def build_interface() -> gr.Blocks:
         # debug outputs).
         parse_button.click(
             parse_batch_ui,
-            inputs=[file_input, mode_input, chunk_mode_input],
+            inputs=[file_input],
             outputs=[
                 state,
                 doc_selector,
