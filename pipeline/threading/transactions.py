@@ -51,6 +51,15 @@ class SectionTransaction:
         """Normalise ``para_seq`` so emitted units remain monotonic."""
 
         if para_seq > 0:
+            if para_seq < self.last_para_seq:
+                fallback = self.claim_aux_para_seq()
+                logger.debug(
+                    "rebasing non-monotonic para_seq for section %s: %s -> %s",
+                    self.section_seq,
+                    para_seq,
+                    fallback,
+                )
+                return fallback
             self.record_paragraph(para_seq)
             return para_seq
 
