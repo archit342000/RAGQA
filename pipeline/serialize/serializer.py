@@ -251,7 +251,13 @@ class Serializer:
                             grouped[key] = (flush_txn, [])
                         grouped[key][1].append(flush_block)
                     for flush_txn, blocks in grouped.values():
+                        manager.prepare_for_emit(flush_txn)
+                        for flush_block in blocks:
+                            flush_block.metadata["owner_section_seq"] = flush_txn.section_seq
+                            flush_block.metadata["section_seq"] = flush_txn.section_seq
                         units.extend(self._aux_units(flush_txn, blocks, doc_id=document.doc_id))
+                manager.prepare_for_emit(txn)
+                block.metadata["section_seq"] = txn.section_seq
                 sentence_units = self._sentence_units(txn, block, doc_id=document.doc_id)
                 units.extend(sentence_units)
 
@@ -262,6 +268,10 @@ class Serializer:
                 grouped_flush[key] = (flush_txn, [])
             grouped_flush[key][1].append(flush_block)
         for flush_txn, blocks in grouped_flush.values():
+            manager.prepare_for_emit(flush_txn)
+            for flush_block in blocks:
+                flush_block.metadata["owner_section_seq"] = flush_txn.section_seq
+                flush_block.metadata["section_seq"] = flush_txn.section_seq
             units.extend(self._aux_units(flush_txn, blocks, doc_id=document.doc_id))
 
         if self.log_preview > 0 and units:

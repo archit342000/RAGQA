@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class SectionTransaction:
     """Track per-section sequencing and delayed auxiliaries."""
 
+    raw_section_seq: int
     section_seq: int
     section_id: str
     level: int
@@ -81,26 +82,55 @@ class SectionTransactions:
             section: deque(list(blocks)) for section, blocks in (aux_by_section or {}).items()
         }
         self.delayed_aux_count = sum(len(blocks) for blocks in (aux_by_section or {}).values())
+        self._max_order_seq = 0
+        self._last_emitted_section_seq = 0
         root = self._ensure_transaction(section_seq=0, section_id="0", level=0)
         if not self._stack:
             self._stack.append(root)
         self.flush_events: List[Tuple[int, int]] = []
 
+    def _allocate_order_seq(self, raw_section_seq: int) -> int:
+        if raw_section_seq <= 0:
+            return 0
+        if raw_section_seq <= self._max_order_seq:
+            self._max_order_seq += 1
+            return self._max_order_seq
+        self._max_order_seq = raw_section_seq
+        return raw_section_seq
+
     def _ensure_transaction(self, section_seq: int, section_id: str, level: int) -> SectionTransaction:
         txn = self._transactions.get(section_seq)
         if txn is None:
             queue = self._aux_lookup.get(section_seq, deque())
+            order_seq = self._allocate_order_seq(section_seq)
             txn = SectionTransaction(
-                section_seq=section_seq,
+                raw_section_seq=section_seq,
+                section_seq=order_seq,
                 section_id=section_id,
                 level=level,
                 aux_queue=queue,
             )
             self._transactions[section_seq] = txn
+            self._last_emitted_section_seq = max(self._last_emitted_section_seq, txn.section_seq)
         else:
             txn.section_id = section_id
             txn.level = level
         return txn
+
+    def prepare_for_emit(self, txn: SectionTransaction) -> None:
+        """Ensure ``txn`` has a monotonic section sequence before emission."""
+
+        if txn.section_seq < self._last_emitted_section_seq:
+            self._max_order_seq += 1
+            new_seq = self._max_order_seq
+            logger.debug(
+                "rebasing section %s from %s to %s",
+                txn.section_id,
+                txn.section_seq,
+                new_seq,
+            )
+            txn.section_seq = new_seq
+        self._last_emitted_section_seq = max(self._last_emitted_section_seq, txn.section_seq)
 
     def _seal_section(self, txn: SectionTransaction) -> List[Tuple[SectionTransaction, FusedBlock]]:
         if txn.sealed:
@@ -129,7 +159,7 @@ class SectionTransactions:
         level: int,
     ) -> List[Tuple[SectionTransaction, FusedBlock]]:
         flushed: List[Tuple[SectionTransaction, FusedBlock]] = []
-        while len(self._stack) > 1 and self._stack[-1].section_seq != section_seq:
+        while len(self._stack) > 1 and self._stack[-1].raw_section_seq != section_seq:
             top = self._stack[-1]
             if top.level >= level:
                 txn = self._stack.pop()
@@ -157,7 +187,7 @@ class SectionTransactions:
             flushed.extend(self._pop_until(section_seq, level))
 
         txn = self._ensure_transaction(section_seq, section_id, level)
-        if not self._stack or self._stack[-1].section_seq != section_seq:
+        if not self._stack or self._stack[-1].raw_section_seq != section_seq:
             self._stack.append(txn)
         return txn, flushed
 
