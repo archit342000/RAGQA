@@ -44,15 +44,15 @@ reads the following variables (defaults in parentheses):
 - `MAX_PAGES` (`800`): hard limit on processed pages per document.
 - `MAX_TOTAL_PAGES` (`1200`): aggregate ceiling across all uploaded documents in one run.
 - `MIN_CHARS_PER_PAGE` (`200`): threshold used to detect sparse pages during heuristic checks.
-- `FALLBACK_EMPTY_PAGE_RATIO` (`0.3`): ratio of low-density pages that triggers the legacy `unstructured` fallback (still
-  available in the UI).
-- `UNSTRUCTURED_STRATEGY` (`fast`): default fallback strategy.
+- `UNSTRUCTURED_STRATEGY` (`fast`): default parsing mode surfaced in the UI dropdown ("Fast", "Auto", or "High-Res"). The
+  legacy name remains for compatibility.
 - `ENABLE_HI_RES` (`false`): when set to `true`, enables the "High accuracy" parsing mode in the UI. Otherwise the option is
   disabled and requests are clamped to the fast path.
 - `SHOW_DEBUG` (`false`): when `true`, exposes the developer-focused metrics panel in the UI.
 - `CHUNK_MODE_DEFAULT` (`semantic`): default chunking strategy when the UI control is untouched.
 - `MAX_TOTAL_TOKENS_FOR_CHUNKING` (`300000`): guardrail enforced by the chunker to keep latency bounded.
-- `SEMANTIC_MODEL_NAME` (`intfloat/e5-small-v2`): embedding model used by the semantic chunker in the UI.
+- `PIPELINE_SKIP_EMBEDDER` (`false`): skip loading the optional semantic embedder when set to `true`.
+- `EMBEDDING_MODEL` (`all-MiniLM-L6-v2`): sentence-transformer used by the hybrid chunker when semantic mode is enabled.
 - `TOKENIZER_NAME` (`hf-internal-testing/llama-tokenizer`): tokenizer used for legacy token accounting.
 
 ### Hybrid Pipeline Overview
@@ -101,7 +101,7 @@ regression suites.
 
 ## Testing
 
-The included tests exercise the legacy parser, routing heuristics, and chunking flows:
+The included tests exercise the hybrid parser, routing heuristics, and chunking flows:
 
 ```bash
 pytest -q
@@ -116,9 +116,9 @@ python -m pipeline.run --pdf sample_docs/sample.pdf --emit-chunks artifacts/samp
 
 ## Package Overview
 
-- `parser/` – legacy extraction, cleaning, and driver logic used by the UI.
+- `parser/` – hybrid ingestion driver and cleaning utilities surfaced by the UI.
 - `pipeline/` – hybrid PyMuPDF/LayoutParser pipeline modules.
-- `chunking/` – semantic/fixed chunkers used by the UI plus the new retrieval chunker.
+- `chunking/` – compatibility wrappers around the hybrid retrieval chunker used by the UI.
 - `app.py` – Gradio Blocks UI for quick inspection.
 - `tests/` – pytest suite covering parsing and chunking flows.
 

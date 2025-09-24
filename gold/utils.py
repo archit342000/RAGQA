@@ -86,8 +86,8 @@ def load_parsed_docs(parsed_dir: str | Path) -> Iterator[ParsedDoc]:
                 doc_name=payload.get("doc_name", payload["doc_id"]),
                 page_num=page["page_num"],
                 text=page["text"],
-                offset_start=page.get("offset_start"),
-                offset_end=page.get("offset_end"),
+                offset_start=page.get("char_start", page.get("offset_start")),
+                offset_end=page.get("char_end", page.get("offset_end")),
             )
             for page in payload.get("pages", [])
             if page.get("text")

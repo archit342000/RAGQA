@@ -1,6 +1,6 @@
 """Chunking utilities for converting parsed documents into retrieval chunks."""
 
 from .driver import chunk_documents
-from .types import Block, Chunk
+from .types import Chunk
 
-__all__ = ["chunk_documents", "Block", "Chunk"]
+__all__ = ["chunk_documents", "Chunk"]
