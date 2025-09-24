@@ -1,19 +1,25 @@
-"""Unit tests covering both semantic and fixed chunking pathways."""
-
-from __future__ import annotations
-
-from pathlib import Path
-
 import pytest
 
 from chunking.driver import chunk_documents
 from parser.types import ParsedDoc, ParsedPage
-import chunking.semantic_chunker as semantic_module
+
+from pipeline.layout.lp_fuser import FusedBlock, FusedDocument, FusedPage
+from pipeline.layout.router import LayoutRoutingPlan
+from pipeline.layout.signals import PageLayoutSignals, PageSignalExtras
+
+
+@pytest.fixture(autouse=True)
+def configure_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TOKENIZER_NAME", "hf-internal-testing/llama-tokenizer")
+    monkeypatch.setenv("MAX_TOTAL_TOKENS_FOR_CHUNKING", "50000")
+    monkeypatch.setenv("PIPELINE_SKIP_EMBEDDER", "true")
+
+
+_SIGNAL_NAMES = ("CIS", "OGR", "BXS", "DAS", "FVS", "ROJ", "TFI", "MSA", "FNL")
 
 
 def _make_page(doc_id: str, page_num: int, text: str, file_name: str = "fixture.pdf") -> ParsedPage:
-    """Helper for creating ``ParsedPage`` fixtures with minimal boilerplate."""
-    metadata = {"file_name": file_name}
+    metadata = {"file_name": file_name, "source": "hybrid", "strategy": "hybrid"}
     return ParsedPage(
         doc_id=doc_id,
         page_num=page_num,
@@ -23,115 +29,162 @@ def _make_page(doc_id: str, page_num: int, text: str, file_name: str = "fixture.
     )
 
 
-def _make_doc(doc_id: str, pages: list[ParsedPage], parser_used: str = "pypdf") -> ParsedDoc:
-    """Bundle pages into a ``ParsedDoc`` for the chunker to consume."""
+def _make_doc(
+    doc_id: str,
+    pages: list[ParsedPage],
+    fused_pages: list[FusedPage],
+    *,
+    block_index: dict[str, FusedBlock],
+) -> ParsedDoc:
+    signals: list[PageLayoutSignals] = []
+    for page in fused_pages:
+        assignments = {block.block_id: 0 for block in page.main_flow}
+        extras = PageSignalExtras(
+            column_count=1,
+            column_assignments=assignments,
+            table_overlap_ratio=0.0,
+            figure_overlap_ratio=0.0,
+            dominant_font_size=12.0,
+            footnote_block_ids=[],
+        )
+        raw = {name: 0.1 for name in _SIGNAL_NAMES}
+        signals.append(PageLayoutSignals(page_number=page.page_number, raw=raw, normalized=raw, page_score=0.2, extras=extras))
+    fused_document = FusedDocument(doc_id=doc_id, pages=fused_pages, block_index=block_index)
+    plan = LayoutRoutingPlan(doc_id=doc_id, total_pages=len(fused_pages), budget=len(fused_pages), selected_pages=[page.page_number for page in fused_pages], decisions=[], overflow=0)
     return ParsedDoc(
         doc_id=doc_id,
         pages=pages,
-        total_chars=sum(len(p.text) for p in pages),
-        parser_used=parser_used,
+        total_chars=sum(len(page.text) for page in pages),
+        parser_used="pymupdf-hybrid",
         stats={},
+        meta={"file_name": pages[0].metadata.get("file_name", doc_id), "truncated": False},
+        fused_document=fused_document,
+        layout_signals=signals,
+        routing_plan=plan,
     )
 
 
-@pytest.fixture(autouse=True)
-def patch_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TOKENIZER_NAME", "hf-internal-testing/llama-tokenizer")
-    monkeypatch.setenv("MAX_TOTAL_TOKENS_FOR_CHUNKING", "50000")
-
-
-def test_semantic_chunking_produces_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Semantic mode should respect the semantic splitter when available."""
-    calls: list[str] = []
-
-    def fake_semantic_segments(text: str, model_name: str, max_sentences: int = 300):  # type: ignore[override]
-        calls.append(text)
-        return ["Paragraph one." , "Paragraph two continuing the discussion."]
-
-    monkeypatch.setattr(semantic_module, "semantic_segments", fake_semantic_segments)
-
-    doc = _make_doc(
-        "doc-sem",
-        [
-            _make_page("doc-sem", 1, "Heading\n\nParagraph one. Paragraph two continuing the discussion."),
-        ],
+def test_hybrid_chunking_produces_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    doc_id = "doc-sem"
+    page = _make_page(doc_id, 1, "Paragraph one. Paragraph two continuing the discussion.")
+    main_block = FusedBlock(
+        block_id="b1",
+        page_number=1,
+        text=page.text,
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        block_type="main",
+        region_label="text",
+        aux_category=None,
+        anchor=None,
+        column=0,
+        char_start=0,
+        char_end=len(page.text),
+        avg_font_size=12.0,
+        metadata={},
     )
+    fused_page = FusedPage(page_number=1, width=612.0, height=792.0, main_flow=[main_block], auxiliaries=[])
+    doc = _make_doc(doc_id, [page], [fused_page], block_index={"b1": main_block})
 
     chunks, stats = chunk_documents([doc], mode="semantic")
 
-    assert chunks, "Expected at least one semantic chunk"
-    assert chunks[0].meta["strategy"].startswith("semantic")
-    assert stats["doc-sem"]["chunks"] == len(chunks)
-    assert 0 < chunks[0].token_len < 900
+    assert chunks, "Expected at least one hybrid chunk"
+    assert chunks[0].meta["strategy"] == "hybrid-semantic"
+    assert "block_ids" in chunks[0].meta
+    assert stats[doc_id]["chunks"] == len(chunks)
+    assert stats[doc_id]["lp_pages"] == 1
 
 
-def test_fixed_chunking_window_sizes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fixed mode emits overlapping windows that respect token limits."""
-    long_text = " ".join(["token" + str(i) for i in range(1000)])
-    doc = _make_doc(
-        "doc-fixed",
-        [
-            _make_page("doc-fixed", 1, long_text),
-        ],
+def test_table_blocks_emit_table_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    doc_id = "doc-table"
+    page = _make_page(doc_id, 1, "Body text before table.")
+    main_block = FusedBlock(
+        block_id="b1",
+        page_number=1,
+        text=page.text,
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        block_type="main",
+        region_label="text",
+        aux_category=None,
+        anchor=None,
+        column=0,
+        char_start=0,
+        char_end=len(page.text),
+        avg_font_size=12.0,
+        metadata={},
     )
-
-    chunks, _ = chunk_documents([doc], mode="fixed")
-
-    assert len(chunks) >= 2, "Fixed mode should create multiple windows for long text"
-    lengths = [chunk.token_len for chunk in chunks]
-    assert max(lengths) <= 900
-    assert min(lengths) >= 200
-
-
-def test_table_heavy_page_falls_back_to_fixed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Table-heavy content should bypass the semantic chunker automatically."""
-    monkeypatch.setattr(semantic_module, "semantic_segments", lambda *args, **kwargs: pytest.fail("Semantic chunker should not run"))
-
-    table_text = "Row | Col\n1 | 2 | 3\n4 | 5 | 6"
-    doc = _make_doc(
-        "doc-table",
-        [_make_page("doc-table", 1, table_text)],
+    table_block = FusedBlock(
+        block_id="t1",
+        page_number=1,
+        text="H1 H2\nR1C1 R1C2\nR2C1 R2C2",
+        bbox=(0.0, 120.0, 100.0, 200.0),
+        block_type="aux",
+        region_label="table",
+        aux_category="table",
+        anchor="[AUX-1-1]",
+        column=None,
+        char_start=len(page.text),
+        char_end=len(page.text) + 20,
+        avg_font_size=11.0,
+        metadata={},
     )
+    fused_page = FusedPage(page_number=1, width=612.0, height=792.0, main_flow=[main_block], auxiliaries=[table_block])
+    doc = _make_doc(doc_id, [page], [fused_page], block_index={"b1": main_block, "t1": table_block})
+
+    chunks, stats = chunk_documents([doc], mode="fixed")
+
+    table_chunks = [chunk for chunk in chunks if chunk.meta.get("table_row_range")]
+    assert table_chunks, "Table blocks should yield dedicated table chunks"
+    assert stats[doc_id]["tables"] == len(table_chunks)
+
+
+def test_auxiliary_attachment_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    from chunking import driver as chunk_driver
+
+    chunk_driver._load_embedder.cache_clear()
+    monkeypatch.setenv("PIPELINE_SKIP_EMBEDDER", "false")
+
+    def fake_embedder(texts):
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(chunk_driver, "_load_embedder", lambda model_name=None: fake_embedder)
+
+    doc_id = "doc-aux"
+    page = _make_page(doc_id, 1, "Main paragraph content for attachment.")
+    main_block = FusedBlock(
+        block_id="b1",
+        page_number=1,
+        text=page.text,
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        block_type="main",
+        region_label="text",
+        aux_category=None,
+        anchor=None,
+        column=0,
+        char_start=0,
+        char_end=len(page.text),
+        avg_font_size=12.0,
+        metadata={},
+    )
+    aux_block = FusedBlock(
+        block_id="a1",
+        page_number=1,
+        text="Figure caption awaiting attachment",
+        bbox=(0.0, 120.0, 100.0, 200.0),
+        block_type="aux",
+        region_label="figure",
+        aux_category="figure",
+        anchor="[AUX-1-1]",
+        column=None,
+        char_start=len(page.text),
+        char_end=len(page.text) + 32,
+        avg_font_size=11.0,
+        metadata={},
+    )
+    fused_page = FusedPage(page_number=1, width=612.0, height=792.0, main_flow=[main_block], auxiliaries=[aux_block])
+    doc = _make_doc(doc_id, [page], [fused_page], block_index={"b1": main_block, "a1": aux_block})
 
     chunks, stats = chunk_documents([doc], mode="semantic")
 
-    assert chunks
-    assert all(chunk.meta["strategy"].startswith("fixed") for chunk in chunks)
-    assert stats["doc-table"]["strategies"]["fixed"] >= 1
-
-
-def test_multi_doc_chunking_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Multi-document runs should keep doc_ids intact across chunks."""
-    doc_a = _make_doc(
-        "doc-a",
-        [
-            _make_page("doc-a", 1, "Document A content sentence one. Sentence two."),
-            _make_page("doc-a", 2, "Document A page two with more prose."),
-        ],
-    )
-    doc_b = _make_doc(
-        "doc-b",
-        [_make_page("doc-b", 1, "Document B single page text.")],
-    )
-
-    chunks, stats = chunk_documents([doc_a, doc_b], mode="fixed")
-
-    doc_ids = {chunk.doc_id for chunk in chunks}
-    assert {"doc-a", "doc-b"}.issubset(doc_ids)
-    assert set(stats.keys()) == {"doc-a", "doc-b"}
-
-
-def test_chunk_metadata_preserves_pages(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Page anchors and doc names must flow through to chunk metadata."""
-    doc = _make_doc(
-        "doc-pages",
-        [
-            _make_page("doc-pages", 1, "First page text."),
-            _make_page("doc-pages", 2, "Second page text that extends."),
-        ],
-    )
-
-    chunks, _ = chunk_documents([doc], mode="fixed")
-
-    assert all(chunk.page_start <= chunk.page_end for chunk in chunks)
-    assert all(chunk.doc_name for chunk in chunks)
+    attached = sum(len(chunk.meta.get("aux_attached") or []) for chunk in chunks)
+    assert attached >= 1
+    assert stats[doc_id]["aux_attached"] == attached

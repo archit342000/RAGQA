@@ -1,95 +1,141 @@
-"""Public entrypoint for transforming parsed documents into retrieval chunks.
-
-The driver stitches together segmentation analytics, semantic/fixed chunking
-heuristics, and token packing. It operates on ``ParsedDoc`` objects produced by
-the parser module and returns a list of ready-to-use ``Chunk`` instances along
-with per-document statistics consumed by the UI.
-"""
+"""Hybrid chunking driver built on top of the fused layout pipeline."""
 
 from __future__ import annotations
 
 import logging
 import os
-from collections import defaultdict
+from functools import lru_cache
 from typing import Dict, List, Sequence, Tuple
 
 from env_loader import load_dotenv_once
 
-from chunking import semantic_chunker
-from chunking.segmenter import segment_page
-from chunking.types import Block, Chunk
-from chunking.packer import get_tokenizer, pack_blocks
+from pipeline.chunking.chunker import Chunk as HybridChunk, DocumentChunker
+from pipeline.layout.lp_fuser import FusedBlock, FusedDocument, FusedPage
+from pipeline.layout.signals import PageLayoutSignals, PageSignalExtras
+from pipeline.repair.repair_pass import EmbeddingFn
 from parser.types import ParsedDoc
+
+from chunking.types import Chunk
 
 logger = logging.getLogger(__name__)
 
 load_dotenv_once()
 
-# Default configuration knobs pulled from environment at import time.
-DEFAULT_SEMANTIC_MODEL = os.getenv("SEMANTIC_MODEL_NAME", "intfloat/e5-small-v2")
-DEFAULT_CHUNK_MODE = os.getenv("CHUNK_MODE_DEFAULT", "semantic").lower()
 TOKENIZER_NAME = os.getenv("TOKENIZER_NAME")
 MAX_TOTAL_TOKENS = int(os.getenv("MAX_TOTAL_TOKENS_FOR_CHUNKING", "300000"))
+DEFAULT_CHUNK_MODE = os.getenv("CHUNK_MODE_DEFAULT", "semantic").lower()
+DEFAULT_EMBEDDER_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+_SIGNAL_NAMES = ("CIS", "OGR", "BXS", "DAS", "FVS", "ROJ", "TFI", "MSA", "FNL")
+
+try:  # Optional dependency; unavailable in lightweight environments.
+    from sentence_transformers import SentenceTransformer  # type: ignore
+except Exception:  # pragma: no cover - dependency missing in tests
+    SentenceTransformer = None  # type: ignore[misc]
 
 
-def _page_blocks(doc_id: str, doc_name: str, page_num: int, text: str) -> Tuple[List[Block], dict]:
-    """Segment a page and drop empty blocks.
+@lru_cache(maxsize=1)
+def _load_embedder(model_name: str | None = None) -> EmbeddingFn | None:
+    """Lazily instantiate the sentence-transformer embedder used by the chunker."""
 
-    Returns both the filtered block list and the layout profile so callers can
-    make routing decisions without reprocessing the page.
-    """
+    if os.getenv("PIPELINE_SKIP_EMBEDDER", "false").strip().lower() == "true":
+        return None
+    if SentenceTransformer is None:
+        return None
+    name = model_name or DEFAULT_EMBEDDER_MODEL
+    try:
+        model = SentenceTransformer(name)
+    except Exception as exc:  # pragma: no cover - dependency/runtime issues
+        logger.warning("Failed to load sentence-transformer %s: %s", name, exc)
+        return None
 
-    blocks, profile = segment_page(doc_id, doc_name, page_num, text)
-    return [blk for blk in blocks if blk.text], profile
+    def _embed(texts: Sequence[str]):
+        vectors = model.encode(list(texts), normalize_embeddings=False)
+        return [list(map(float, vector)) for vector in vectors]
+
+    return _embed
 
 
-def _semantic_or_fixed_blocks(
-    *,
-    doc_id: str,
-    doc_name: str,
-    page_num: int,
-    text: str,
-    base_blocks: List[Block],
-    profile: dict,
-    semantic_enabled: bool,
-    model_name: str,
-) -> Tuple[List[Block], str]:
-    """Return blocks for the page using semantic splitting when appropriate."""
+def _synthetic_pipeline_view(doc: ParsedDoc) -> Tuple[FusedDocument, List[PageLayoutSignals]]:
+    """Build a minimal fused document/signals pair for non-PDF inputs."""
 
-    table_heavy = bool(profile.get("table_heavy"))
-    if not semantic_enabled or table_heavy:
-        return base_blocks, "fixed"
+    if doc.fused_document is not None and doc.layout_signals is not None:
+        return doc.fused_document, list(doc.layout_signals)
 
-    segments = semantic_chunker.semantic_segments(text, model_name=model_name)
-    if not segments:
-        return base_blocks, "fixed"
+    pages: List[FusedPage] = []
+    index: Dict[str, FusedBlock] = {}
+    signals: List[PageLayoutSignals] = []
+    for page in doc.pages:
+        block_id = f"{doc.doc_id}_p{page.page_num}_b0"
+        block = FusedBlock(
+            block_id=block_id,
+            page_number=page.page_num,
+            text=page.text,
+            bbox=(0.0, 0.0, 1.0, 1.0),
+            block_type="main",
+            region_label="text",
+            aux_category=None,
+            anchor=None,
+            column=0,
+            char_start=page.char_range[0],
+            char_end=page.char_range[1],
+            avg_font_size=12.0,
+            metadata={"synthetic": True},
+        )
+        index[block_id] = block
+        fused_page = FusedPage(
+            page_number=page.page_num,
+            width=1.0,
+            height=1.0,
+            main_flow=[block],
+            auxiliaries=[],
+        )
+        pages.append(fused_page)
 
-    semantic_blocks: List[Block] = []
-    cursor = 0
-    lowered = text
-    for segment in segments:
-        snippet = segment.strip()
-        if not snippet:
-            continue
-        idx = lowered.find(snippet, cursor)
-        if idx == -1:
-            idx = cursor
-        char_start = idx
-        char_end = idx + len(snippet)
-        cursor = char_end
-        semantic_blocks.append(
-            Block(
-                doc_id=doc_id,
-                doc_name=doc_name,
-                page_num=page_num,
-                kind="semantic",
-                text=snippet,
-                char_start=char_start,
-                char_end=char_end,
+        extras = PageSignalExtras(
+            column_count=1,
+            column_assignments={block_id: 0},
+            table_overlap_ratio=0.0,
+            figure_overlap_ratio=0.0,
+            dominant_font_size=12.0,
+            footnote_block_ids=[],
+        )
+        raw = {name: 0.0 for name in _SIGNAL_NAMES}
+        normalized = {name: 0.0 for name in _SIGNAL_NAMES}
+        signals.append(
+            PageLayoutSignals(
+                page_number=page.page_num,
+                raw=raw,
+                normalized=normalized,
+                page_score=0.0,
+                extras=extras,
             )
         )
 
-    return (semantic_blocks or base_blocks), "semantic"
+    return FusedDocument(doc_id=doc.doc_id, pages=pages, block_index=index), signals
+
+
+def _convert_chunk(
+    hybrid_chunk: HybridChunk,
+    *,
+    doc_id: str,
+    doc_name: str,
+    mode_label: str,
+) -> Chunk:
+    metadata = dict(hybrid_chunk.metadata)
+    metadata["chunk_id"] = hybrid_chunk.chunk_id
+    metadata["strategy"] = f"hybrid-{mode_label}"
+    page_start = int(metadata.pop("page_start", 0) or 0)
+    page_end = int(metadata.pop("page_end", page_start) or page_start)
+    return Chunk(
+        doc_id=doc_id,
+        doc_name=doc_name,
+        page_start=page_start,
+        page_end=page_end,
+        section_title=None,
+        text=hybrid_chunk.text,
+        token_len=int(hybrid_chunk.tokens),
+        meta=metadata,
+    )
 
 
 def chunk_documents(
@@ -98,149 +144,55 @@ def chunk_documents(
     mode: str | None = None,
     model_name: str | None = None,
 ) -> Tuple[List[Chunk], Dict[str, dict]]:
-    """Chunk cleaned documents into retrieval-friendly windows.
-
-    Parameters
-    ----------
-    docs:
-        Sequence of parsed documents produced by :mod:`parser.driver`.
-    mode:
-        Requested chunking mode (``"semantic"`` or ``"fixed"``). When ``None``
-        we consult ``CHUNK_MODE_DEFAULT`` from the environment.
-    model_name:
-        Optional embedding model override used by the semantic chunker.
-
-    Returns
-    -------
-    tuple[list[Chunk], dict]
-        The first element contains the fully materialised retrieval chunks. The
-        second maps ``doc_id`` to diagnostic statistics that the UI can surface
-        in the debug panel.
-    """
+    """Chunk parsed documents into retrieval windows using the hybrid pipeline."""
 
     chunks: List[Chunk] = []
     chunk_stats: Dict[str, dict] = {}
-    tokenizer = get_tokenizer(TOKENIZER_NAME)
-
     requested_mode = (mode or DEFAULT_CHUNK_MODE).lower()
-    semantic_enabled = requested_mode == "semantic"
-    semantic_model = model_name or DEFAULT_SEMANTIC_MODEL
+    use_semantic = requested_mode != "fixed"
+    embedder = _load_embedder(model_name if use_semantic else None) if use_semantic else None
+    chunker = DocumentChunker(tokenizer_name=TOKENIZER_NAME, embedder=embedder)
 
     total_tokens_emitted = 0
 
     for doc in docs:
         doc_name = doc.pages[0].metadata.get("file_name") if doc.pages else doc.doc_id
-        # Each sequence groups contiguous blocks that share the same packing
-        # configuration (semantic vs. fixed/table). We process sequences
-        # sequentially, emitting chunks until the global token guardrail is hit.
-        doc_configured_sequences: List[Tuple[List[Block], Dict[str, int | str]]] = []
+        fused, signals = _synthetic_pipeline_view(doc)
+        hybrid_chunks = chunker.chunk_document(fused, signals)
+        doc_chunks: List[Chunk] = []
+        attached_aux = 0
+        table_chunks = 0
 
-        current_config_key = None
-        current_sequence: List[Block] = []
-        # Track how many pages fell into each strategy so the UI can surface
-        # meaningful diagnostics to the operator.
-        per_strategy_counts = defaultdict(int)
+        for hybrid in hybrid_chunks:
+            if total_tokens_emitted + hybrid.tokens > MAX_TOTAL_TOKENS:
+                logger.warning("Token guardrail reached; stopping chunk generation for doc %s", doc.doc_id)
+                break
+            chunk = _convert_chunk(hybrid, doc_id=doc.doc_id, doc_name=doc_name or doc.doc_id, mode_label=requested_mode)
+            meta_aux = chunk.meta.get("aux_attached")
+            if isinstance(meta_aux, list):
+                attached_aux += len(meta_aux)
+            if chunk.meta.get("table_row_range"):
+                table_chunks += 1
+            chunks.append(chunk)
+            doc_chunks.append(chunk)
+            total_tokens_emitted += chunk.token_len
 
-        for page in doc.pages:
-            page_num = page.page_num
-            base_blocks, profile = _page_blocks(doc.doc_id, doc_name or doc.doc_id, page.page_num, page.text)
-            blocks, strategy_used = _semantic_or_fixed_blocks(
-                doc_id=doc.doc_id,
-                doc_name=doc_name or doc.doc_id,
-                page_num=page_num,
-                text=page.text,
-                base_blocks=base_blocks,
-                profile=profile,
-                semantic_enabled=semantic_enabled,
-                model_name=semantic_model,
-            )
-            per_strategy_counts[strategy_used] += 1
-
-            # Tune packer parameters per strategy; tables prefer smaller windows.
-            if strategy_used == "fixed" and profile.get("table_heavy"):
-                config = {
-                    "max_tokens": 400,
-                    "min_tokens": 200,
-                    "overlap_tokens": 40,
-                    "max_pages": 3,
-                    "strategy_label": "fixed-table",
-                }
-            elif strategy_used == "fixed":
-                config = {
-                    "max_tokens": 700,
-                    "min_tokens": 200,
-                    "overlap_tokens": 100,
-                    "max_pages": 3,
-                    "strategy_label": "fixed",
-                }
-            else:  # semantic
-                config = {
-                    "max_tokens": 700,
-                    "min_tokens": 200,
-                    "overlap_tokens": 100,
-                    "max_pages": 3,
-                    "strategy_label": "semantic",
-                }
-
-            config_key = tuple(sorted(config.items()))
-            if current_config_key is None:
-                current_config_key = config_key
-                current_sequence = blocks[:]
-            elif config_key == current_config_key:
-                current_sequence.extend(blocks)
-            else:
-                if current_sequence:
-                    config_dict = dict(current_config_key)
-                    doc_configured_sequences.append((current_sequence, config_dict))
-                current_config_key = config_key
-                current_sequence = blocks[:]
-
-        if current_sequence:
-            config_dict = dict(current_config_key) if current_config_key else {
-                "max_tokens": 700,
-                "min_tokens": 200,
-                "overlap_tokens": 100,
-                "max_pages": 3,
-                "strategy_label": "fixed",
-            }
-            doc_configured_sequences.append((current_sequence, config_dict))
-
-        # Pack each configured sequence and accumulate resulting chunks.
-        doc_chunk_list: List[Chunk] = []
-        for sequence_blocks, cfg in doc_configured_sequences:
-            if not sequence_blocks:
-                continue
-            # ``pack_blocks`` honours min/max tokens and applies overlap rules.
-            generated = pack_blocks(
-                sequence_blocks,
-                tokenizer=tokenizer,
-                max_tokens=int(cfg["max_tokens"]),
-                min_tokens=int(cfg["min_tokens"]),
-                overlap_tokens=int(cfg["overlap_tokens"]),
-                max_pages=int(cfg["max_pages"]),
-                strategy_label=str(cfg["strategy_label"]),
-            )
-            for chunk in generated:
-                if total_tokens_emitted + chunk.token_len > MAX_TOTAL_TOKENS:
-                    logger.warning("Token guardrail reached; stopping chunk generation for doc %s", doc.doc_id)
-                    break
-                doc_chunk_list.append(chunk)
-                total_tokens_emitted += chunk.token_len
-            else:
-                continue
-            break  # guardrail triggered: stop generating further sequences
-
-        chunks.extend(doc_chunk_list)
-
-        if doc_chunk_list:
-            avg_tokens = sum(ch.token_len for ch in doc_chunk_list) / len(doc_chunk_list)
+        if doc_chunks:
+            avg_tokens = sum(ch.token_len for ch in doc_chunks) / len(doc_chunks)
         else:
             avg_tokens = 0.0
-        chunk_stats[doc.doc_id] = {
+
+        stats_entry = {
             "doc_name": doc_name or doc.doc_id,
-            "chunks": len(doc_chunk_list),
+            "chunks": len(doc_chunks),
             "avg_tokens": round(avg_tokens, 2),
-            "strategies": {k: int(v) for k, v in per_strategy_counts.items()},
+            "mode": requested_mode,
+            "tables": table_chunks,
+            "aux_attached": attached_aux,
         }
+        if doc.routing_plan is not None:
+            stats_entry["lp_ratio"] = float(doc.routing_plan.ratio)
+            stats_entry["lp_pages"] = len(doc.routing_plan.selected_pages)
+        chunk_stats[doc.doc_id] = stats_entry
 
     return chunks, chunk_stats
