@@ -28,6 +28,10 @@ class TelemetryCollector:
     threading_carried: int = 0
     threading_dehyphenated: int = 0
     threading_audit_fixes: int = 0
+    threading_delayed: int = 0
+    threading_post_section: int = 0
+    threading_page_end_flushes: int = 0
+    threading_section_flushes: int = 0
     repair_merges: int = 0
     repair_splits: int = 0
     repair_total_blocks: int = 0
@@ -67,6 +71,10 @@ class TelemetryCollector:
         self.threading_carried += max(0, report.carried_aux)
         self.threading_dehyphenated += max(0, report.dehyphenated_pairs)
         self.threading_audit_fixes += max(0, report.audit_fixes)
+        self.threading_delayed += max(0, report.delayed_aux)
+        self.threading_post_section += max(0, report.post_section_aux)
+        self.threading_page_end_flushes += max(0, report.page_end_flushes)
+        self.threading_section_flushes += max(0, report.section_flushes)
 
     def record_retrieval_metrics(
         self,
@@ -100,6 +108,10 @@ class TelemetryCollector:
                 "carried": self.threading_carried,
                 "dehyphenated": self.threading_dehyphenated,
                 "audit_fixes": self.threading_audit_fixes,
+                "delayed": self.threading_delayed,
+                "post_section": self.threading_post_section,
+                "page_end_flushes": self.threading_page_end_flushes,
+                "section_flushes": self.threading_section_flushes,
             },
             "retrieval_deltas": retrieval_deltas,
         }

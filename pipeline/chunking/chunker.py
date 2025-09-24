@@ -251,56 +251,26 @@ class DocumentChunker:
                 "table_row_range": (start_row, end_row) if rows_slice else None,
                 "has_anchor_refs": bool(block.metadata.get("has_anchor_refs")),
                 "aux_attached": [],
+                "section_id": block.metadata.get("owner_section_id") or block.metadata.get("section_id"),
+                "para_ids": [],
+                "aux_kind": block.aux_category or "table",
+                "owner_section_id": block.metadata.get("owner_section_id"),
+                "linked_figure_id": block.metadata.get("linked_figure_id")
+                or block.metadata.get("caption_target_bbox"),
+                "references": block.metadata.get("references", []),
             }
             chunk_id = self._next_chunk_id(doc_id)
             chunks.append(Chunk(chunk_id=chunk_id, text=text, tokens=token_count, metadata=metadata))
             row_index += size
         return chunks
 
-    def _attach_auxiliary(
-        self,
-        chunk: Chunk,
-        aux_blocks: List[FusedBlock],
-        attached: set[str],
-    ) -> None:
-        if not aux_blocks or self.embedder is None:
-            return
-        remaining = [block for block in aux_blocks if block.block_id not in attached and block.text]
-        if not remaining:
-            return
-        chunk_vecs = self.embedder([chunk.text])
-        if not chunk_vecs:
-            return
-        chunk_vec = chunk_vecs[0]
-        best_score = 0.0
-        best_block: Optional[FusedBlock] = None
-        for block in remaining:
-            aux_vecs = self.embedder([block.text])
-            if not aux_vecs:
-                continue
-            aux_vec = aux_vecs[0]
-            dot = sum(a * b for a, b in zip(chunk_vec, aux_vec))
-            norm_chunk = math.sqrt(sum(a * a for a in chunk_vec))
-            norm_aux = math.sqrt(sum(a * a for a in aux_vec))
-            if norm_chunk == 0 or norm_aux == 0:
-                continue
-            score = dot / (norm_chunk * norm_aux)
-            if score >= 0.55 and score > best_score:
-                best_score = score
-                best_block = block
-        if best_block is None:
-            return
-        attached.add(best_block.block_id)
-        chunk.text += "\n\n[AUX] " + best_block.text
-        chunk.tokens = self.tokenizer.count(chunk.text)
-        aux_list = chunk.metadata.setdefault("aux_attached", [])
-        if isinstance(aux_list, list):
-            aux_list.append(best_block.block_id)
-
     def _finalise_chunk(
         self,
         doc_id: str,
         buffer: List[BlockSegment],
+        *,
+        section_id: str,
+        para_ids: List[str],
     ) -> Optional[Chunk]:
         if not buffer:
             return None
@@ -331,6 +301,39 @@ class DocumentChunker:
             "table_row_range": None,
             "has_anchor_refs": has_anchor,
             "aux_attached": [],
+            "section_id": section_id,
+            "para_ids": list(dict.fromkeys(para_ids)),
+        }
+        chunk_id = self._next_chunk_id(doc_id)
+        return Chunk(chunk_id=chunk_id, text=text, tokens=token_count, metadata=metadata)
+
+    def _build_aux_chunk(self, doc_id: str, block: FusedBlock) -> Optional[Chunk]:
+        text = block.text.strip()
+        if not text:
+            return None
+        token_count = self.tokenizer.count(text)
+        references = block.metadata.get("references")
+        if not isinstance(references, list):
+            references = []
+        metadata: Dict[str, object] = {
+            "doc_id": doc_id,
+            "page_start": block.page_number,
+            "page_end": block.page_number,
+            "char_start": block.char_start,
+            "char_end": block.char_end,
+            "block_ids": [block.block_id],
+            "block_types": [block.block_type],
+            "region_type_counts": {block.region_label: 1},
+            "table_row_range": None,
+            "has_anchor_refs": bool(block.metadata.get("has_anchor_refs")),
+            "aux_kind": block.aux_category or block.region_label,
+            "owner_section_id": block.metadata.get("owner_section_id"),
+            "linked_figure_id": block.metadata.get("linked_figure_id")
+            or block.metadata.get("caption_target_bbox"),
+            "references": references,
+            "section_id": block.metadata.get("owner_section_id") or block.metadata.get("section_id"),
+            "para_ids": [],
+            "aux_attached": [],
         }
         chunk_id = self._next_chunk_id(doc_id)
         return Chunk(chunk_id=chunk_id, text=text, tokens=token_count, metadata=metadata)
@@ -344,75 +347,128 @@ class DocumentChunker:
             raise ValueError("Signals must align with document pages")
 
         chunks: List[Chunk] = []
-        aux_candidates: List[FusedBlock] = []
-        for page in document.pages:
-            for block in page.auxiliaries:
-                if block.aux_category == "table" or block.region_label == "table":
-                    chunks.extend(self._table_chunks(block, page, document.doc_id))
-                else:
-                    aux_candidates.append(block)
+        page_segments: Dict[int, List[BlockSegment]] = {
+            page.page_number: self._build_prose_segments(page) for page in document.pages
+        }
+        page_lookup: Dict[int, FusedPage] = {page.page_number: page for page in document.pages}
 
-        attached_aux: set[str] = set()
-        buffer: List[BlockSegment] = []
-        buffer_tokens = 0
-        current_type: Optional[str] = None
-        for page, _signal in zip(document.pages, signals):
-            segments = self._build_prose_segments(page)
-            for segment in segments:
-                if not segment.text.strip():
-                    continue
-                if current_type and segment.segment_type != current_type and buffer:
-                    chunk = self._finalise_chunk(document.doc_id, buffer)
-                    if chunk:
-                        chunks.append(chunk)
-                        self._attach_auxiliary(chunk, aux_candidates, attached_aux)
-                    buffer = []
-                    buffer_tokens = 0
-                current_type = segment.segment_type
-                buffer.append(segment)
-                buffer_tokens += segment.token_count
-                target = 300 if current_type == "procedure" else 500
-                upper = 350 if current_type == "procedure" else 700
-                lower = 250 if current_type == "procedure" else 180
-                if buffer_tokens >= target or buffer_tokens >= upper:
-                    chunk = self._finalise_chunk(document.doc_id, buffer)
-                    if chunk:
-                        if current_type == "procedure" and chunk.tokens < lower and segment != segments[-1]:
-                            continue
-                        chunks.append(chunk)
-                        self._attach_auxiliary(chunk, aux_candidates, attached_aux)
-                    if buffer:
-                        overlap = 40 if current_type == "procedure" else 80
-                        tail_segment = buffer[-1]
-                        if tail_segment.token_count > overlap:
-                            tail_tokens = tail_segment.tokens[-overlap:]
-                            tail_text = self.tokenizer.decode(tail_tokens)
-                            buffer = [
-                                BlockSegment(
-                                    block=tail_segment.block,
-                                    page_number=tail_segment.page_number,
-                                    text=tail_text,
-                                    tokens=tail_tokens,
-                                    token_count=len(tail_tokens),
-                                    char_start_offset=max(
-                                        0,
-                                        tail_segment.char_end_offset - len(tail_text),
-                                    ),
-                                    char_end_offset=tail_segment.char_end_offset,
-                                    segment_type=current_type,
-                                )
-                            ]
-                            buffer_tokens = len(tail_tokens)
-                        else:
-                            buffer = [tail_segment]
-                            buffer_tokens = tail_segment.token_count
-                    else:
+        section_order: List[str] = []
+        aux_by_section: Dict[str, List[FusedBlock]] = {}
+
+        for page in document.pages:
+            for block in page.main_flow:
+                section_id = str(block.metadata.get("section_id") or "0")
+                if section_id not in section_order:
+                    section_order.append(section_id)
+            for aux in page.auxiliaries:
+                owner = str(aux.metadata.get("owner_section_id") or aux.metadata.get("section_id") or "0")
+                aux_by_section.setdefault(owner, []).append(aux)
+
+        for section_id in aux_by_section:
+            if section_id not in section_order:
+                section_order.append(section_id)
+
+        for section_id in section_order:
+            buffer: List[BlockSegment] = []
+            buffer_tokens = 0
+            current_type: Optional[str] = None
+            para_ids: List[str] = []
+            for page in document.pages:
+                segments = page_segments.get(page.page_number, [])
+                for segment in segments:
+                    seg_section = str(segment.block.metadata.get("section_id") or "0")
+                    if seg_section != section_id:
+                        continue
+                    if not segment.text.strip():
+                        continue
+                    if current_type and segment.segment_type != current_type and buffer:
+                        chunk = self._finalise_chunk(
+                            document.doc_id,
+                            buffer,
+                            section_id=section_id,
+                            para_ids=para_ids,
+                        )
+                        if chunk:
+                            chunks.append(chunk)
+                        buffer = []
                         buffer_tokens = 0
-        if buffer:
-            chunk = self._finalise_chunk(document.doc_id, buffer)
-            if chunk:
-                chunks.append(chunk)
-                self._attach_auxiliary(chunk, aux_candidates, attached_aux)
+                        para_ids = []
+                    current_type = segment.segment_type
+                    buffer.append(segment)
+                    buffer_tokens += segment.token_count
+                    para_id = str(segment.block.metadata.get("paragraph_id") or segment.block.block_id)
+                    if para_id not in para_ids:
+                        para_ids.append(para_id)
+                    target = 300 if current_type == "procedure" else 500
+                    upper = 350 if current_type == "procedure" else 700
+                    if buffer_tokens >= target or buffer_tokens >= upper:
+                        chunk = self._finalise_chunk(
+                            document.doc_id,
+                            buffer,
+                            section_id=section_id,
+                            para_ids=para_ids,
+                        )
+                        if chunk:
+                            chunks.append(chunk)
+                        if buffer:
+                            overlap = 40 if current_type == "procedure" else 80
+                            tail_segment = buffer[-1]
+                            if tail_segment.token_count > overlap:
+                                tail_tokens = tail_segment.tokens[-overlap:]
+                                tail_text = self.tokenizer.decode(tail_tokens)
+                                buffer = [
+                                    BlockSegment(
+                                        block=tail_segment.block,
+                                        page_number=tail_segment.page_number,
+                                        text=tail_text,
+                                        tokens=tail_tokens,
+                                        token_count=len(tail_tokens),
+                                        char_start_offset=max(
+                                            0,
+                                            tail_segment.char_end_offset - len(tail_text),
+                                        ),
+                                        char_end_offset=tail_segment.char_end_offset,
+                                        segment_type=current_type,
+                                    )
+                                ]
+                                buffer_tokens = len(tail_tokens)
+                                para_ids = [
+                                    str(
+                                        buffer[0].block.metadata.get("paragraph_id")
+                                        or buffer[0].block.block_id
+                                    )
+                                ]
+                            else:
+                                buffer = [tail_segment]
+                                buffer_tokens = tail_segment.token_count
+                                para_ids = [
+                                    str(
+                                        tail_segment.block.metadata.get("paragraph_id")
+                                        or tail_segment.block.block_id
+                                    )
+                                ]
+                        else:
+                            buffer_tokens = 0
+                            para_ids = []
+            if buffer:
+                chunk = self._finalise_chunk(
+                    document.doc_id,
+                    buffer,
+                    section_id=section_id,
+                    para_ids=para_ids,
+                )
+                if chunk:
+                    chunks.append(chunk)
+
+            for aux in aux_by_section.get(section_id, []):
+                if aux.aux_category == "table" or aux.region_label == "table":
+                    page = page_lookup.get(aux.page_number)
+                    if page:
+                        chunks.extend(self._table_chunks(aux, page, document.doc_id))
+                else:
+                    aux_chunk = self._build_aux_chunk(document.doc_id, aux)
+                    if aux_chunk:
+                        chunks.append(aux_chunk)
         return chunks
 
 

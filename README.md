@@ -61,8 +61,9 @@ reads the following variables (defaults in parentheses):
 The updated `pipeline/` package orchestrates a multi-stage PDF workflow designed for robust mixed-layout parsing:
 
 1. **Ingestion (`pipeline.ingest.pdf_parser`)** – PyMuPDF extracts spans, lines, fonts, and bounding boxes per page, emitting a
-   structured page graph that preserves block metadata (font statistics, numeric ratios, bullet density, etc.) while suppressing
-   repeating headers/footers via cross-page heuristics.
+   structured page graph that preserves block metadata (font statistics, numeric ratios, bullet density, etc.), suppresses repeating
+   headers/footers only when they recur on ≥5 pages, and tags each block with section hierarchy / keep-with-next metadata for
+   downstream threading.
 2. **Layout Signals (`pipeline.layout.signals`)** – Nine robust signals are computed per page (CIS, OGR, BXS, DAS, FVS, ROJ, TFI,
    MSA, FNL). Values are normalised to [0, 1] via the median/IQR of the first ten pages before a weighted page score is derived.
 3. **Routing (`pipeline.layout.router`)** – Pages are queued for LayoutParser when the score ≥0.55 or any of the hard triggers
@@ -73,14 +74,15 @@ The updated `pipeline/` package orchestrates a multi-stage PDF workflow designed
 5. **Layout Fusion (`pipeline.layout.lp_fuser`)** – LayoutParser detections (PubLayNet/PRIMA/DocBank) are fused with PyMuPDF
    blocks using IoU≥0.3. Auxiliary regions (lists, tables, figures, titles off-grid) are stored separately while prose blocks are
    ordered using detected regions and column threading.
-6. **Threading (`pipeline.threading.threader`, `pipeline.repair.dehyphenate`, `pipeline.audit.thread_audit`)** – Two-page lookahead, delayed anchoring queues, and cross-page dehyphenation ensure auxiliaries land on sentence/paragraph boundaries without breaking header/lead-paragraph pairs. Anchors are audited post-threading to guarantee legal placement before downstream chunking.
+6. **Threading (`pipeline.threading.threader`, `pipeline.repair.dehyphenate`, `pipeline.audit.thread_audit`)** – Two-page lookahead, per-section auxiliary queues, and cross-page dehyphenation keep section text contiguous while banning anchors between headers and their lead paragraphs. Queued auxiliaries are flushed only when a section closes (or the document ends); audits repair any stragglers by relocating anchors to the nearest legal boundary.
 7. **Repair (`pipeline.repair.repair_pass`)** – Adjacent main-flow blocks are stitched when embedding cosine ≥0.80, guarded
    against over-merging across columns with large Δy. Footnotes are linked via superscript markers and retained as separate,
    anchored blocks. A failure counter is returned so the router can escalate LayoutParser coverage if stitching stalls.
 8. **Chunking (`pipeline.chunking.chunker`)** – Prose targets ~500 tokens (180–700 bounds, 80-token overlap) with semantic splits
    when sections exceed 600 tokens and sentence-level Δcos >0.15. Procedures respect 250–350 token windows with 40-token overlap.
-   Tables are sharded into 6–12 row ranges with duplicated headers and `col:value` flattening, and at most one auxiliary block is
-   appended to a chunk when cosine similarity ≥0.55.
+   Main-flow chunks are emitted section by section; once a section closes, captions, callouts, footnotes, and other auxiliaries are
+   rendered as standalone chunks linked via metadata. Tables are sharded into 6–12 row ranges with duplicated headers and `col:value`
+   flattening.
 9. **Telemetry (`pipeline.telemetry.metrics`)** – Collects LP utilisation ratios, latency per page, score distributions, top-two
    signals per routed page, interleave error rates, repair merge/split percentages, threading queue metrics, and retrieval deltas (Hit@K/MRR).
 
@@ -91,9 +93,13 @@ Each emitted chunk records:
 - `doc_id`, `page_start`, `page_end`
 - Character offsets (`char_start`, `char_end`)
 - Source block identifiers and types
-- Region type counts and auxiliary attachments
-- Table row ranges (for structured chunks)
+- Section metadata (`section_id`) and ordered `para_ids`
+- Region type counts
+- Table row ranges (for structured/table chunks)
 - Boolean `has_anchor_refs` flag when inline anchors are inserted
+- Auxiliary chunk details (`aux_kind`, `owner_section_id`, `linked_figure_id`, `references`)
+
+Parser and threading thresholds (auxiliary lexicon, font/width tolerances, optional figure-adjacent anchoring) are configurable via `configs/parser.yaml`.
 
 These annotations align chunks with the original document for citation, reranking, and gold alignment.
 

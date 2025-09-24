@@ -6,7 +6,11 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+import yaml
 
 from pipeline.ingest.pdf_parser import PDFBlock, PageGraph
 
@@ -14,19 +18,54 @@ logger = logging.getLogger(__name__)
 
 BBox = Tuple[float, float, float, float]
 
-_AUX_LEXICON = (
-    "fig.",
-    "figure",
-    "table",
-    "source",
-    "activity",
-    "discuss",
-    "think",
-    "imagine",
-    "let's",
-    "lets",
-    "keywords",
-)
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "parser.yaml"
+
+
+def _default_config() -> Dict[str, object]:
+    return {
+        "font_ratio_threshold": 0.85,
+        "width_ratio_threshold": 0.7,
+        "center_tolerance_ratio": 0.12,
+        "off_grid_tolerance_ratio": 0.2,
+        "bottom_band_ratio": 0.15,
+        "min_confidence": 0.5,
+        "figure_iou_threshold": 0.05,
+        "figure_distance_ratio": 0.15,
+        "lexicon": [
+            "Fig.",
+            "Figure",
+            "Table",
+            "Source",
+            "Activity",
+            "Discuss",
+            "Think",
+            "Imagine",
+            "Let's",
+            "Let’s",
+            "Keywords",
+        ],
+    }
+
+
+@lru_cache(maxsize=1)
+def _aux_config() -> Dict[str, object]:
+    config = _default_config()
+    try:
+        with _CONFIG_PATH.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except FileNotFoundError:
+        data = {}
+    except Exception as exc:  # pragma: no cover - configuration errors are non-fatal
+        logger.debug("Failed to load parser config %s: %s", _CONFIG_PATH, exc)
+        data = {}
+    aux_cfg = data.get("aux_detection") if isinstance(data, dict) else None
+    if isinstance(aux_cfg, dict):
+        for key, value in aux_cfg.items():
+            if key == "lexicon" and isinstance(value, list):
+                config["lexicon"] = [str(item) for item in value]
+            elif key in config:
+                config[key] = value
+    return config
 
 
 @dataclass(slots=True)
@@ -39,6 +78,9 @@ class AuxBlockRecord:
     anchor_hint: Optional[str] = None
     is_caption: bool = False
     is_footnote: bool = False
+    owner_section_id: Optional[str] = None
+    adjacent_to_figure: bool = False
+    references: List[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -46,22 +88,32 @@ class AuxDetectionResult:
     blocks: Dict[str, AuxBlockRecord]
     caption_links: Dict[str, BBox]
     footnote_ids: List[str]
-
-
-def _normalise(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip()).lower()
-
-
-def _lexical_score(text: str, lexicon: Sequence[str]) -> Tuple[float, Optional[str]]:
-    lowered = _normalise(text)
+def _lexical_category(text: str, lexicon: Sequence[str]) -> Optional[str]:
+    stripped = text.strip()
+    if not stripped:
+        return None
     for token in lexicon:
-        if lowered.startswith(token):
-            if token.startswith("table"):
-                return 0.6, "table"
-            if token.startswith("fig") or token.startswith("figure"):
-                return 0.6, "figure"
-            return 0.5, None
-    return 0.0, None
+        pattern = rf"^{re.escape(token)}\b"
+        if re.match(pattern, stripped, re.IGNORECASE):
+            lowered = token.lower()
+            if lowered.startswith("table"):
+                return "table"
+            if lowered.startswith("fig"):
+                return "figure"
+            if lowered.startswith("source"):
+                return "source"
+            if lowered.startswith("activity"):
+                return "activity"
+            if lowered.startswith("discuss"):
+                return "discuss"
+            if lowered.startswith("think"):
+                return "think"
+            if lowered.startswith("imagine"):
+                return "imagine"
+            if "keyword" in lowered:
+                return "keywords"
+            return "aux"
+    return None
 
 
 def _column_width(page: PageGraph, column_assignments: Mapping[str, int] | None) -> float:
@@ -112,13 +164,22 @@ def detect_auxiliary_blocks(
     body_font_size: float,
     column_assignments: Mapping[str, int] | None = None,
     figure_regions: Sequence[BBox] | None = None,
-    lexicon: Sequence[str] = _AUX_LEXICON,
+    section_map: Mapping[str, str] | None = None,
 ) -> AuxDetectionResult:
     """Classify auxiliary blocks for ``page`` using lexical and geometric cues."""
 
+    config = _aux_config()
+    lexicon = config.get("lexicon", [])
     figure_regions = figure_regions or []
     column_centres = _column_positions(page, column_assignments)
     column_width = _column_width(page, column_assignments)
+    off_grid_tol = max(column_width * float(config.get("off_grid_tolerance_ratio", 0.2)), 1.0)
+    centre_tol = page.width * float(config.get("center_tolerance_ratio", 0.12))
+    bottom_band_threshold = page.height * (1.0 - float(config.get("bottom_band_ratio", 0.15)))
+    min_confidence = float(config.get("min_confidence", 0.5))
+    distance_threshold = max(page.width, page.height) * float(config.get("figure_distance_ratio", 0.15))
+    iou_threshold = float(config.get("figure_iou_threshold", 0.05))
+
     result: Dict[str, AuxBlockRecord] = {}
     caption_links: Dict[str, BBox] = {}
     footnote_ids: List[str] = []
@@ -127,31 +188,31 @@ def detect_auxiliary_blocks(
         if block.metadata.get("suppressed"):
             continue
         text = block.text.strip()
-        if not text or len(text) < 2:
+        if len(text) < 2:
             continue
 
-        score = 0.0
         reasons: List[str] = []
-        lexical_score, lexical_target = _lexical_score(text, lexicon)
-        if lexical_score:
-            score += lexical_score
+        score = 0.0
+        lexical_category = _lexical_category(text, lexicon) if isinstance(lexicon, Iterable) else None
+        if lexical_category:
+            score += 0.4
             reasons.append("lexical")
 
         font_ratio = block.avg_font_size / max(body_font_size or 1.0, 1.0)
-        if font_ratio <= 0.85:
-            score += 0.2
+        if font_ratio <= float(config.get("font_ratio_threshold", 0.85)):
+            score += 0.25
             reasons.append("small-font")
 
         width_ratio = block.width / max(column_width, 1.0)
-        if width_ratio <= 0.7:
-            score += 0.15
+        if width_ratio <= float(config.get("width_ratio_threshold", 0.7)):
+            score += 0.2
             reasons.append("narrow")
 
         column = column_assignments.get(block.block_id) if column_assignments else None
         off_grid = False
         if column is not None and column in column_centres:
             offset = abs(block.bbox[0] - column_centres[column])
-            if offset > column_width * 0.2:
+            if offset > off_grid_tol:
                 off_grid = True
         elif column is None and width_ratio < 0.5:
             off_grid = True
@@ -160,7 +221,7 @@ def detect_auxiliary_blocks(
             reasons.append("off-grid")
 
         centre_x = (block.bbox[0] + block.bbox[2]) / 2.0
-        centred = abs(centre_x - (page.width / 2.0)) <= page.width * 0.12
+        centred = abs(centre_x - (page.width / 2.0)) <= centre_tol
         if centred:
             score += 0.1
             reasons.append("centred")
@@ -170,47 +231,59 @@ def detect_auxiliary_blocks(
             ious = [(_iou(block.bbox, bbox), bbox) for bbox in figure_regions]
             if ious:
                 top_iou, bbox = max(ious, key=lambda item: item[0])
-                if top_iou >= 0.05:
+                if top_iou >= iou_threshold:
                     nearest_bbox = bbox
                     score += 0.2
                     reasons.append("figure-proximity")
                 else:
-                    # fallback to distance weighting
                     closest = min(figure_regions, key=lambda bbox: _distance_to_bbox(block, bbox))
                     dist = _distance_to_bbox(block, closest)
-                    if dist < max(page.width, page.height) * 0.15:
+                    if dist <= distance_threshold:
                         nearest_bbox = closest
                         score += 0.15
                         reasons.append("figure-near")
 
-        is_bottom_band = block.bbox[1] >= page.height * 0.82
-        has_superscript = block.metadata.get("superscript_count", 0) >= 3
-        if is_bottom_band and font_ratio <= 0.8:
-            score = max(score, 0.6)
+        superscripts = block.metadata.get("superscript_count", 0)
+        is_bottom_band = block.bbox[1] >= bottom_band_threshold
+        is_footnote = False
+        if is_bottom_band and font_ratio <= 0.8 and superscripts >= 3:
+            is_footnote = True
+            score = max(score, 0.75)
             reasons.append("footnote-band")
-            if has_superscript:
-                reasons.append("superscript")
+            reasons.append("superscripts")
             footnote_ids.append(block.block_id)
 
-        if score < 0.5 and block.block_id not in footnote_ids:
+        if score < min_confidence and not is_footnote:
             continue
 
         category = "aux"
         is_caption = False
-        is_footnote = block.block_id in footnote_ids
         if is_footnote:
             category = "footnote"
-        elif lexical_target == "table":
+        elif lexical_category == "table":
             category = "table_caption"
             is_caption = True
-        elif lexical_target == "figure":
+        elif lexical_category == "figure":
             category = "figure_caption"
             is_caption = True
         elif nearest_bbox is not None:
             category = "figure_caption"
             is_caption = True
+        elif lexical_category in {"activity", "discuss", "think", "imagine", "keywords", "source"}:
+            category = "callout"
         elif off_grid or centred:
             category = "callout"
+
+        owner_section = None
+        if section_map and block.block_id in section_map:
+            owner_section = section_map[block.block_id]
+        else:
+            owner_section = block.metadata.get("section_id")
+
+        references = []
+        footnote_refs = block.metadata.get("footnote_refs")
+        if isinstance(footnote_refs, list):
+            references = [str(ref) for ref in footnote_refs]
 
         record = AuxBlockRecord(
             block_id=block.block_id,
@@ -218,11 +291,15 @@ def detect_auxiliary_blocks(
             confidence=min(1.0, score),
             reasons=reasons,
             figure_bbox=nearest_bbox,
-            anchor_hint="after",
+            anchor_hint="section-end",
             is_caption=is_caption,
             is_footnote=is_footnote,
+            owner_section_id=str(owner_section) if owner_section else None,
+            adjacent_to_figure=nearest_bbox is not None,
+            references=references,
         )
         result[block.block_id] = record
+        block.metadata["owner_section_id"] = record.owner_section_id
         if nearest_bbox is not None:
             caption_links[block.block_id] = nearest_bbox
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,6 +126,30 @@ class DocumentGraph:
 
     def get_page(self, page_number: int) -> PageGraph:
         return self.pages[page_number - 1]
+
+
+class _SectionCounter:
+    """Maintain hierarchical section numbering while parsing."""
+
+    def __init__(self) -> None:
+        self._path: List[int] = []
+
+    def enter(self, level: int) -> str:
+        level = max(1, level)
+        while len(self._path) >= level:
+            self._path.pop()
+        while len(self._path) < level:
+            self._path.append(0)
+        self._path[level - 1] += 1
+        for idx in range(level, len(self._path)):
+            self._path[idx] = 0
+        return self.current()
+
+    def current(self) -> str:
+        return ".".join(str(num) for num in self._path if num > 0) or "0"
+
+    def level(self) -> int:
+        return len(self._path)
 
 
 def _ensure_fitz_available() -> None:
@@ -309,6 +334,8 @@ def _parse_blocks(
             block.metadata["zone"] = _block_zone(block, page_height)
             block.char_start = current_offset
             block.char_end = current_offset
+            if block.block_type in {"image", "draw"}:
+                block.metadata["figure_candidate"] = True
         blocks.append(block)
 
     logger.debug("Page %d extracted %d blocks (%d text)", page_number, len(blocks), text_blocks)
@@ -338,15 +365,14 @@ def _collect_repeating_headers_footers(pages: List[PageGraph]) -> Dict[int, Dict
     if not pages:
         return flagged
     page_count = len(pages)
-    min_occurrences = 2 if page_count < 5 else 3
-    threshold_ratio = 0.45 if page_count >= 5 else 0.6
+    if page_count < 5:
+        return flagged
 
+    min_occurrences = 5
     for zone, entries in patterns.items():
         for _, blocks in entries.items():
             unique_pages = {page_number for page_number, _ in blocks}
             if len(unique_pages) < min_occurrences:
-                continue
-            if len(unique_pages) / page_count < threshold_ratio:
                 continue
             for page_number, block in blocks:
                 flagged[page_number][block.block_id] = zone
@@ -389,6 +415,73 @@ def _recompute_document_offsets(pages: List[PageGraph]) -> int:
                 offset = block.char_end
         page.char_end = offset
     return offset
+
+
+def _estimate_body_font(pages: List[PageGraph]) -> float:
+    fonts: List[float] = []
+    for page in pages:
+        for block in page.text_blocks:
+            if block.metadata.get("suppressed"):
+                continue
+            if block.avg_font_size > 0:
+                fonts.append(block.avg_font_size)
+    if not fonts:
+        return 11.0
+    return float(statistics.median(sorted(fonts)))
+
+
+def _heading_level(block: PDFBlock, body_font: float) -> int:
+    if not block.is_text or not block.text.strip():
+        return 0
+    ratio = block.avg_font_size / max(body_font, 1.0)
+    text = block.text.strip()
+    if ratio >= 1.6:
+        return 1
+    if ratio >= 1.35:
+        return 2
+    if ratio >= 1.18:
+        return 3
+    if ratio >= 1.08 and re.match(r"^[0-9]+(\.[0-9]+)*\s", text):
+        return 2
+    return 0
+
+
+def _assign_section_metadata(pages: List[PageGraph]) -> None:
+    if not pages:
+        return
+    body_font = _estimate_body_font(pages)
+    tracker = _SectionCounter()
+    pending_lead: Optional[Tuple[str, int]] = None
+    for page in pages:
+        for block in page.blocks:
+            block.metadata.setdefault("section_id", tracker.current())
+            block.metadata.setdefault("section_level", tracker.level())
+            block.metadata.setdefault("section_lead", False)
+            block.metadata.setdefault("keep_with_next", False)
+            if not block.is_text or not block.text.strip() or block.metadata.get("suppressed"):
+                continue
+            level = _heading_level(block, body_font)
+            if level:
+                section_id = tracker.enter(level)
+                block.metadata["section_id"] = section_id
+                block.metadata["section_level"] = level
+                block.metadata["is_heading"] = True
+                block.metadata["section_lead"] = False
+                block.metadata["keep_with_next"] = False
+                pending_lead = (section_id, level)
+                continue
+
+            block.metadata["is_heading"] = False
+            block.metadata["section_level"] = tracker.level()
+            block.metadata["section_id"] = tracker.current()
+            if pending_lead and pending_lead[0] == tracker.current():
+                block.metadata["section_lead"] = True
+                block.metadata["keep_with_next"] = True
+                pending_lead = None
+            else:
+                block.metadata["section_lead"] = False
+                block.metadata["keep_with_next"] = False
+            block.metadata.setdefault("paragraph_id", block.block_id)
 
 
 def parse_pdf_with_pymupdf(
@@ -449,6 +542,8 @@ def parse_pdf_with_pymupdf(
         total_chars = _recompute_document_offsets(page_graphs)
     else:
         total_chars = page_graphs[-1].char_end if page_graphs else 0
+
+    _assign_section_metadata(page_graphs)
 
     metadata = {
         "page_count": len(page_graphs),

@@ -84,7 +84,7 @@ def test_hybrid_chunking_produces_chunks(monkeypatch: pytest.MonkeyPatch) -> Non
         char_start=0,
         char_end=len(page.text),
         avg_font_size=12.0,
-        metadata={},
+        metadata={"section_id": "1", "paragraph_id": "1.001"},
     )
     fused_page = FusedPage(page_number=1, width=612.0, height=792.0, main_flow=[main_block], auxiliaries=[])
     doc = _make_doc(doc_id, [page], [fused_page], block_index={"b1": main_block})
@@ -114,7 +114,7 @@ def test_table_blocks_emit_table_chunks(monkeypatch: pytest.MonkeyPatch) -> None
         char_start=0,
         char_end=len(page.text),
         avg_font_size=12.0,
-        metadata={},
+        metadata={"section_id": "1", "paragraph_id": "1.001"},
     )
     table_block = FusedBlock(
         block_id="t1",
@@ -129,7 +129,7 @@ def test_table_blocks_emit_table_chunks(monkeypatch: pytest.MonkeyPatch) -> None
         char_start=len(page.text),
         char_end=len(page.text) + 20,
         avg_font_size=11.0,
-        metadata={},
+        metadata={"owner_section_id": "1", "section_id": "1"},
     )
     fused_page = FusedPage(page_number=1, width=612.0, height=792.0, main_flow=[main_block], auxiliaries=[table_block])
     doc = _make_doc(doc_id, [page], [fused_page], block_index={"b1": main_block, "t1": table_block})
@@ -139,19 +139,11 @@ def test_table_blocks_emit_table_chunks(monkeypatch: pytest.MonkeyPatch) -> None
     table_chunks = [chunk for chunk in chunks if chunk.meta.get("table_row_range")]
     assert table_chunks, "Table blocks should yield dedicated table chunks"
     assert stats[doc_id]["tables"] == len(table_chunks)
+    assert all(chunk.meta.get("aux_kind") == "table" for chunk in table_chunks)
+    assert all(chunk.meta.get("section_id") == "1" for chunk in table_chunks)
 
 
-def test_auxiliary_attachment_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    from chunking import driver as chunk_driver
-
-    chunk_driver._load_embedder.cache_clear()
-    monkeypatch.setenv("PIPELINE_SKIP_EMBEDDER", "false")
-
-    def fake_embedder(texts):
-        return [[1.0, 0.0] for _ in texts]
-
-    monkeypatch.setattr(chunk_driver, "_load_embedder", lambda model_name=None: fake_embedder)
-
+def test_auxiliary_blocks_produce_aux_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     doc_id = "doc-aux"
     page = _make_page(doc_id, 1, "Main paragraph content for attachment.")
     main_block = FusedBlock(
@@ -167,7 +159,7 @@ def test_auxiliary_attachment_counts(monkeypatch: pytest.MonkeyPatch) -> None:
         char_start=0,
         char_end=len(page.text),
         avg_font_size=12.0,
-        metadata={},
+        metadata={"section_id": "1", "paragraph_id": "1.001"},
     )
     aux_block = FusedBlock(
         block_id="a1",
@@ -182,13 +174,14 @@ def test_auxiliary_attachment_counts(monkeypatch: pytest.MonkeyPatch) -> None:
         char_start=len(page.text),
         char_end=len(page.text) + 32,
         avg_font_size=11.0,
-        metadata={},
+        metadata={"owner_section_id": "1"},
     )
     fused_page = FusedPage(page_number=1, width=612.0, height=792.0, main_flow=[main_block], auxiliaries=[aux_block])
     doc = _make_doc(doc_id, [page], [fused_page], block_index={"b1": main_block, "a1": aux_block})
 
     chunks, stats = chunk_documents([doc], mode="semantic")
 
-    attached = sum(len(chunk.meta.get("aux_attached") or []) for chunk in chunks)
-    assert attached >= 1
-    assert stats[doc_id]["aux_attached"] == attached
+    aux_chunks = [chunk for chunk in chunks if chunk.meta.get("aux_kind")]
+    assert aux_chunks, "Auxiliary blocks should yield dedicated chunks"
+    assert all(chunk.meta.get("aux_kind") == "figure" for chunk in aux_chunks)
+    assert stats[doc_id]["aux_attached"] == 0

@@ -26,25 +26,37 @@ def _make_text_block(block_id: str, text: str, bbox: tuple[float, float, float, 
 
 
 def test_header_footer_suppression_recomputes_offsets() -> None:
-    header1 = _make_text_block("p1_h", "Unit 1", (0, 0, 400, 40), 12.0, zone="header")
-    body1 = _make_text_block("p1_body", "Page one body.", (0, 80, 400, 400), 11.0)
-    header2 = _make_text_block("p2_h", "Unit 1", (0, 0, 400, 40), 12.0, zone="header")
-    body2 = _make_text_block("p2_body", "Page two body.", (0, 80, 400, 400), 11.0)
+    pages: list[PageGraph] = []
+    bodies: list[PDFBlock] = []
+    for idx in range(5):
+        header = _make_text_block(f"p{idx+1}_h", "Unit 1", (0, 0, 400, 40), 12.0, zone="header")
+        body = _make_text_block(f"p{idx+1}_body", f"Page {idx+1} body.", (0, 80, 400, 400), 11.0)
+        page = PageGraph(
+            page_number=idx + 1,
+            width=400,
+            height=600,
+            rotation=0,
+            blocks=[header, body],
+            raw_dict={},
+            char_start=0,
+            char_end=body.char_end,
+        )
+        pages.append(page)
+        bodies.append(body)
 
-    page1 = PageGraph(page_number=1, width=400, height=600, rotation=0, blocks=[header1, body1], raw_dict={}, char_start=0, char_end=body1.char_end)
-    page2 = PageGraph(page_number=2, width=400, height=600, rotation=0, blocks=[header2, body2], raw_dict={}, char_start=0, char_end=body2.char_end)
+    flagged = pdf_parser._collect_repeating_headers_footers(pages)  # type: ignore[attr-defined]
+    suppressed = pdf_parser._suppress_headers_footers(pages, flagged)  # type: ignore[attr-defined]
+    total_chars = pdf_parser._recompute_document_offsets(pages)  # type: ignore[attr-defined]
 
-    flagged = pdf_parser._collect_repeating_headers_footers([page1, page2])  # type: ignore[attr-defined]
-    suppressed = pdf_parser._suppress_headers_footers([page1, page2], flagged)  # type: ignore[attr-defined]
-    total_chars = pdf_parser._recompute_document_offsets([page1, page2])  # type: ignore[attr-defined]
-
-    assert suppressed == 2
-    assert header1.text == ""
-    assert header2.metadata.get("suppressed") is True
+    assert suppressed == 5
+    for page in pages:
+        assert page.blocks[0].text == ""
+        assert page.blocks[0].metadata.get("suppressed") is True
     # After recomputing offsets, body blocks should be contiguous
-    assert body1.char_start == 0
-    assert body2.char_start > body1.char_end
-    assert total_chars == body2.char_end + 1
+    assert bodies[0].char_start == 0
+    for prev, current in zip(bodies, bodies[1:]):
+        assert current.char_start > prev.char_end
+    assert total_chars == bodies[-1].char_end + 1
 
 
 def test_aux_detection_identifies_caption() -> None:
@@ -100,7 +112,18 @@ def test_dehyphenation_merges_cross_page_word() -> None:
 
 def test_threader_delays_aux_until_sentence_end() -> None:
     heading_block = _make_text_block("p1_b0", "Chapter 1", (0, 0, 400, 40), 18.0)
+    heading_block.metadata.update({
+        "is_heading": True,
+        "section_level": 1,
+        "section_id": "1",
+    })
     para_block = _make_text_block("p1_b1", "This is the lead paragraph introducing the topic.", (0, 80, 400, 200), 12.0)
+    para_block.metadata.update({
+        "section_id": "1",
+        "section_level": 1,
+        "section_lead": True,
+        "keep_with_next": True,
+    })
     aux_block = FusedBlock(
         block_id="p1_aux",
         page_number=1,
@@ -109,12 +132,12 @@ def test_threader_delays_aux_until_sentence_end() -> None:
         block_type="aux",
         region_label="figure",
         aux_category="figure_caption",
-        anchor="[AUX-1-1]",
+        anchor=None,
         column=None,
         char_start=0,
         char_end=0,
         avg_font_size=9.0,
-        metadata={"anchored_to": "p1_b1"},
+        metadata={"anchored_to": "p1_b1", "owner_section_id": "1"},
     )
 
     fused_heading = FusedBlock(
@@ -130,12 +153,12 @@ def test_threader_delays_aux_until_sentence_end() -> None:
         char_start=0,
         char_end=9,
         avg_font_size=heading_block.avg_font_size,
-        metadata={},
+        metadata={"section_id": "1", "is_heading": True, "section_level": 1},
     )
     fused_para = FusedBlock(
         block_id=para_block.block_id,
         page_number=1,
-        text="This is the lead [AUX-1-1] paragraph introducing the topic.",
+        text="This is the lead paragraph introducing the topic.",
         bbox=para_block.bbox,
         block_type="main",
         region_label="text",
@@ -145,7 +168,7 @@ def test_threader_delays_aux_until_sentence_end() -> None:
         char_start=0,
         char_end=56,
         avg_font_size=para_block.avg_font_size,
-        metadata={},
+        metadata={"section_id": "1", "section_lead": True},
     )
 
     page_graph = PageGraph(
@@ -195,9 +218,12 @@ def test_threader_delays_aux_until_sentence_end() -> None:
     threaded_doc, report = threader.thread_document(document, fused_doc, signals)
 
     para_text = threaded_doc.pages[0].main_flow[1].text
-    assert para_text.endswith(aux_block.anchor)
-    assert "[AUX-1-1]" not in para_text.split("paragraph")[0]
-    assert report.placed_aux >= 1
+    assert para_text.endswith("[AUX-1-001]")
+    assert para_text.count("[AUX-1-001]") == 1
+    assert report.placed_aux == 1
+    assert report.post_section_aux == 1
+    assert report.delayed_aux == 1
+    assert report.page_end_flushes == 0
 
     findings = thread_audit.run_thread_audit(threaded_doc)
     assert findings == []
