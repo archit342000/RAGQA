@@ -55,19 +55,20 @@ def assign_aux_ownership(assignments: Iterable[SectionAssignment]) -> List[Secti
 
     final: List[SectionAssignment] = []
     last_header_for_section: Dict[int, SectionAssignment] = {}
-    last_main_assignment: Optional[SectionAssignment] = None
+    last_section_with_main: Optional[int] = None
+    sections_with_main: set[int] = set()
 
     for assignment in assignments:
         label = assignment.label
         if label.role == "MAIN" and label.is_heading:
             last_header_for_section[assignment.section_seq] = assignment
             final.append(assignment)
-            last_main_assignment = assignment
             continue
 
         if label.role == "MAIN":
             final.append(assignment)
-            last_main_assignment = assignment
+            sections_with_main.add(assignment.section_seq)
+            last_section_with_main = assignment.section_seq
             continue
 
         owner_seq = assignment.owner_section_seq
@@ -75,10 +76,13 @@ def assign_aux_ownership(assignments: Iterable[SectionAssignment]) -> List[Secti
             owner_seq = int(label.block.metadata.get("figure_section_seq", owner_seq))
         elif label.subtype == "footnote" and "reference_section_seq" in label.block.metadata:
             owner_seq = int(label.block.metadata.get("reference_section_seq", owner_seq))
-        elif owner_seq == 0 and last_main_assignment is not None:
-            owner_seq = last_main_assignment.section_seq
+        elif owner_seq == 0 and last_section_with_main is not None:
+            owner_seq = last_section_with_main
         elif owner_seq == 0 and last_header_for_section:
             owner_seq = max(last_header_for_section)
+
+        if owner_seq not in sections_with_main and last_section_with_main is not None:
+            owner_seq = last_section_with_main
 
         final.append(
             SectionAssignment(label=label, section_seq=assignment.section_seq, owner_section_seq=owner_seq)
