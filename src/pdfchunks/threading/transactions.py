@@ -91,6 +91,28 @@ class TransactionManager:
         section = self._sections.get(section_seq)
         if not section:
             return
+        if section.aux_queue and not section.lead_paragraph_seen:
+            fallback = self._last_section_with_lead
+            if fallback is None or fallback == section_seq:
+                fallback = 0
+            fallback_section = self._sections.setdefault(
+                fallback, SectionTransaction(section_seq=fallback)
+            )
+            if not fallback_section.lead_paragraph_seen:
+                fallback_section.lead_paragraph_seen = True
+            reassigned: Deque[SectionAssignment] = deque()
+            while section.aux_queue:
+                assignment = section.aux_queue.popleft()
+                reassigned.append(
+                    SectionAssignment(
+                        label=assignment.label,
+                        section_seq=assignment.section_seq,
+                        owner_section_seq=fallback,
+                    )
+                )
+            fallback_section.aux_queue.extend(reassigned)
+            self.delayed_aux_flush[fallback] = len(fallback_section.aux_queue)
+            self.delayed_aux_flush[section_seq] = len(section.aux_queue)
         section.seal()
         self._current_section = None
 
