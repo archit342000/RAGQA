@@ -23,17 +23,22 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from html import escape
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Sequence
 
 import gradio as gr
 
-from chunking import chunk_documents
 from env_loader import load_dotenv_once
-from parser.driver import parse_documents
-from parser.metrics import merge_doc_stats
-from parser.types import ParsedDoc, RunReport
+
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from pdfchunks.driver import run_pipeline
+from pdfchunks.types import ParsedDoc, RunReport
 from retrieval import RetrievalConfig, build_indexes, retrieve
 
 # Configure module-level logging using an environment-driven log level so that
@@ -48,19 +53,6 @@ load_dotenv_once()
 # Mapping between user-facing parsing mode labels and the backend strategies
 # accepted by the parsing driver. The UI dropdown uses the keys, while the
 # driver expects the values.
-MODE_LABEL_TO_STRATEGY = {
-    "Fast": "fast",
-    "Auto": "auto",
-    "High-Res": "hi_res",
-}
-
-# Labels presented to the user for chunking strategies mapped to the internal
-# identifiers expected by the chunking pipeline.
-CHUNK_MODE_LABELS = {
-    "Semantic (recommended)": "semantic",
-    "Fixed": "fixed",
-}
-
 # Retrieval engine labels surfaced in the UI mapped to the engine keys consumed
 # by the retrieval driver, plus a helper reverse map for convenience.
 RETRIEVAL_LABEL_TO_KEY = {
@@ -75,15 +67,6 @@ RETRIEVAL_KEY_TO_LABEL = {v: k for k, v in RETRIEVAL_LABEL_TO_KEY.items()}
 RETRIEVAL_CFG = RetrievalConfig.from_env()
 DEFAULT_RETRIEVAL_LABEL = RETRIEVAL_KEY_TO_LABEL.get(RETRIEVAL_CFG.default_engine, "Semantic → Rerank")
 
-
-def _hi_res_enabled() -> bool:
-    """Return True when hi-res parsing is explicitly enabled via env."""
-
-    # The ENABLE_HI_RES flag defaults to false because hi-res parsing is
-    # GPU-intensive. The UI checks this before surfacing the option.
-    return os.getenv("ENABLE_HI_RES", "false").strip().lower() == "true"
-
-
 def _show_debug() -> bool:
     """Return True when developer debug output should be visible."""
 
@@ -92,32 +75,11 @@ def _show_debug() -> bool:
     return os.getenv("SHOW_DEBUG", "false").strip().lower() == "true"
 
 
+
 def _gold_export_enabled() -> bool:
     """Return True when gold-set export helpers should be exposed."""
 
     return os.getenv("ENABLE_GOLD_EXPORT", "false").strip().lower() == "true"
-
-
-def _mode_choices() -> List[str]:
-    """List user-facing parsing options based on server capabilities."""
-
-    # Always provide Fast and Auto. Append High-Res only when explicitly
-    # permitted to avoid exposing a configuration that will immediately fail.
-    choices = ["Fast", "Auto"]
-    if _hi_res_enabled():
-        choices.append("High-Res")
-    return choices
-
-
-def _default_mode() -> str:
-    """Resolve the initial parsing mode selection from env defaults."""
-
-    # Read the strategy requested by the operator, convert it back into a UI
-    # label, and fall back to a safe default when the value is unrecognised.
-    env_default = os.getenv("UNSTRUCTURED_STRATEGY", "fast").strip().lower()
-    reverse_map = {v: k for k, v in MODE_LABEL_TO_STRATEGY.items()}
-    candidate = reverse_map.get(env_default, "Fast")
-    return candidate if candidate in _mode_choices() else "Fast"
 
 
 def _default_retrieval_label() -> str:
@@ -128,24 +90,30 @@ def _default_retrieval_label() -> str:
     return DEFAULT_RETRIEVAL_LABEL if DEFAULT_RETRIEVAL_LABEL in RETRIEVAL_LABEL_TO_KEY else "Semantic → Rerank"
 
 
+def _aggregate_doc_stats(docs: Sequence[ParsedDoc]) -> Dict[str, float]:
+    """Aggregate per-document statistics into a single mapping."""
+
+    summary: Dict[str, float] = {}
+    for doc in docs:
+        for key, value in doc.stats.items():
+            summary[key] = summary.get(key, 0.0) + float(value)
+    return summary
+
+
 def _build_debug_payload(docs: Sequence[ParsedDoc], report: RunReport) -> Dict[str, object]:
     """Assemble per-document and aggregate statistics for the debug panel."""
 
-    # Collect per-document metrics so operators can drill into parsing stats for
-    # individual files when troubleshooting.
     per_doc = {
         doc.doc_id: {
-            "file_name": doc.pages[0].metadata.get("file_name", doc.doc_id) if doc.pages else doc.doc_id,
+            "file_name": doc.doc_name,
             "parser_used": doc.parser_used,
             "stats": doc.stats,
         }
         for doc in docs
     }
-    # Merge metrics across all documents for a quick high-level view.
-    aggregate = merge_doc_stats(list(docs))
     payload: Dict[str, object] = {
         "run_report": report._asdict(),
-        "aggregate": aggregate,
+        "aggregate": _aggregate_doc_stats(docs),
         "documents": per_doc,
     }
     return payload
@@ -162,6 +130,19 @@ def _fingerprint_chunks(chunks: Sequence[MutableMapping[str, object]]) -> str:
         digest.update(chunk_id.encode("utf-8"))
         digest.update(str(chunk.get("token_len", 0)).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _chunk_label(chunk: MutableMapping[str, object]) -> str:
+    """Return a human-readable label for a chunk selector entry."""
+
+    page_start = int(chunk.get("page_start") or 0)
+    page_end = int(chunk.get("page_end") or 0)
+    if page_start and page_end:
+        return f"Pages {page_start}-{page_end}"
+    title = str(chunk.get("section_title") or "").strip()
+    if title:
+        return title
+    return str(chunk.get("id") or "Chunk")
 
 
 def _available_engines(index_map: Dict[str, object]) -> set[str]:
@@ -345,7 +326,7 @@ def _ensure_retrieval_state(
     return retrieval_state
 
 
-def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: bool = False):
+def parse_batch(files, *, full_output: bool = False):
     """Handle a UI request to parse documents and emit retrieval chunks."""
 
     # Validate the incoming file list to avoid calling the parser on empty
@@ -359,42 +340,30 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     if not file_paths:
         raise gr.Error("No readable files provided.")
 
-    # Resolve the parsing strategy, respecting server capabilities when hi-res
-    # parsing is not permitted.
-    strategy = MODE_LABEL_TO_STRATEGY.get(mode_label or "Fast", "fast")
-    status_lines: List[str] = []
-    if strategy == "hi_res" and not _hi_res_enabled():
-        status_lines.append("High-Res disabled by server configuration. Falling back to Fast mode.")
-        strategy = "fast"
-
-    # Run the parser driver and collect the structured documents plus a run
-    # report describing any warnings or skipped files.
-    docs, parse_report = parse_documents(file_paths, strategy_env=strategy)
-
-    # Invoke the chunking pipeline using the selected mode so the retrieval
-    # system receives consistent chunk structures.
-    chunk_mode = CHUNK_MODE_LABELS.get(chunk_mode_label, "semantic")
-    chunks, chunk_stats = chunk_documents(docs, mode=chunk_mode)
+    result = run_pipeline(file_paths)
+    docs = result.docs
+    parse_report = result.report
+    chunks = result.chunks
+    chunk_stats = result.chunk_stats
 
     parsed_docs_payload: List[Dict[str, object]] = []
     for doc in docs:
-        doc_name = getattr(doc, "doc_name", None) or doc.doc_id
         pages_payload: List[Dict[str, object]] = []
         for page in doc.pages:
             pages_payload.append(
                 {
                     "page_num": page.page_num,
                     "text": page.text,
-                    "offset_start": getattr(page, "offset_start", None),
-                    "offset_end": getattr(page, "offset_end", None),
+                    "offset_start": page.offset_start,
+                    "offset_end": page.offset_end,
                 }
             )
         parsed_docs_payload.append(
             {
                 "doc_id": doc.doc_id,
-                "doc_name": doc_name,
+                "doc_name": doc.doc_name,
                 "pages": pages_payload,
-                "meta": getattr(doc, "meta", {}),
+                "meta": doc.meta,
             }
         )
 
@@ -404,8 +373,8 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     doc_chunk_map: Dict[str, dict] = {}
     chunk_list: List[Dict[str, object]] = []
 
-    for index, chunk in enumerate(chunks):
-        chunk_key = f"{chunk.doc_id}:{index}"
+    for chunk in chunks:
+        chunk_key = chunk.id
         record = {
             "id": chunk_key,
             "doc_id": chunk.doc_id,
@@ -441,7 +410,7 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     if default_doc:
         keys = doc_chunk_map[default_doc]["chunk_keys"]
         chunk_choices = [
-            (f"Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}", key)
+            (_chunk_label(chunk_registry[key]), key)
             for key in keys
         ]
         if chunk_choices:
@@ -461,8 +430,7 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
         "parsed_docs": parsed_docs_payload,
     }
 
-    # Surface parser status messages immediately so the operator knows whether
-    # documents were skipped or produced no chunks.
+    status_lines: List[str] = []
     if parse_report.message:
         status_lines.append(parse_report.message)
     if parse_report.skipped_docs:
@@ -511,10 +479,10 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     )
 
 
-def parse_batch_ui(files, mode_label: str, chunk_mode_label: str):
+def parse_batch_ui(files):
     """UI wrapper returning the expanded set of outputs for Gradio."""
 
-    return parse_batch(files, mode_label, chunk_mode_label, full_output=True)
+    return parse_batch(files, full_output=True)
 
 
 def prepare_gold_inputs(state: Dict[str, object]) -> str:
@@ -564,7 +532,7 @@ def update_chunk_selector(selected_doc: str, state: Dict[str, object]):
     entry = doc_map.get(selected_doc, {})
     keys = entry.get("chunk_keys", [])
     chunk_choices = [
-        (f"Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}", key)
+        (_chunk_label(chunk_registry[key]), key)
         for key in keys
     ]
     default_key = chunk_choices[0][1] if chunk_choices else None
@@ -716,9 +684,6 @@ def build_interface() -> gr.Blocks:
 
     # Resolve static dropdown defaults up-front so the layout code reads
     # linearly below.
-    mode_choices = _mode_choices()
-    default_mode = _default_mode()
-    chunk_mode_choices = list(CHUNK_MODE_LABELS.keys())
     debug_visible = _show_debug()
 
     with gr.Blocks(title="Document Parser Preview") as demo:
@@ -729,18 +694,6 @@ def build_interface() -> gr.Blocks:
                 file_types=[".pdf", ".txt", ".md"],
                 type="filepath",
                 file_count="multiple",
-            )
-            mode_input = gr.Dropdown(
-                choices=mode_choices,
-                value=default_mode,
-                label="Parsing mode",
-                allow_custom_value=False,
-            )
-            chunk_mode_input = gr.Dropdown(
-                choices=chunk_mode_choices,
-                value="Semantic (recommended)",
-                label="Chunking mode",
-                allow_custom_value=False,
             )
 
         parse_button = gr.Button("Parse documents")
@@ -782,7 +735,7 @@ def build_interface() -> gr.Blocks:
         # debug outputs).
         parse_button.click(
             parse_batch_ui,
-            inputs=[file_input, mode_input, chunk_mode_input],
+            inputs=[file_input],
             outputs=[
                 state,
                 doc_selector,

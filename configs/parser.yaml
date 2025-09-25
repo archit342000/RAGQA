@@ -1,0 +1,54 @@
+block_extraction:
+  header_footer_repeat_threshold: 5
+  top_bottom_exclusion_ratio: 0.1
+  outer_margin_ratio: 0.1
+  shading_threshold: 0.7
+  border_threshold: 0.7
+  max_repeat_candidates: 20
+baselines:
+  column_gap_threshold: 36
+  max_columns: 3
+  column_x_tolerance: 8
+  column_min_overlap: 0.9
+  column_width_ratio: 0.8
+classifier:
+  font_tolerance: 0.1
+  line_height_tolerance: 0.12
+  density_quantile_low: 0.2
+  density_quantile_high: 0.8
+  heading_scale: 1.25
+  heading_regex: '^(?:[A-Z][A-Z0-9\s\-.]{2,}|\d+(?:\.\d+)*\s+.+)'
+  column_min_overlap: 0.9
+  column_width_ratio: 0.8
+  column_x_tolerance: 8.0
+  lexical_cues:
+    - '^Fig\.'
+    - '^Figure'
+    - '^Table'
+    - '^Source'
+    - '^Activity'
+    - '^Discuss'
+    - '^Think'
+    - '^Imagine'
+    - '^Let’s'
+    - '^Lets'
+    - '^Keywords'
+    - '^Answer'
+    - '^Exercise'
+    - '^Try'
+    - '^Project'
+    - '^Case Study'
+threading:
+  lookahead_pages: 2
+  dehyphenate: true
+  sentence_regex: '(?<=[.!?])\s+(?=[A-Z0-9])'
+  paragraph_end_regex: '[.!?]\s*$'
+chunker:
+  main_target_tokens: 500
+  main_min_tokens: 180
+  main_max_tokens: 700
+  main_overlap_tokens: 80
+  main_small_overlap_tokens: 40
+  aux_max_tokens: 400
+audits:
+  log_order_key_limit: 20
