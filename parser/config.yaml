@@ -1,0 +1,30 @@
+thresholds:
+  tau_main: 0.60
+  tau_main_page_confident: 0.55
+  tau_heading_h12: 0.75
+  tau_heading_h3: 0.60
+bands:
+  margin_x_pct: [0.0, 0.12, 0.88, 1.0]
+  footer_y_pct: 0.88
+  header_y_pct: 0.12
+page_turn:
+  nextpage_top_window_pct: {caption: 0.15, sidenote: 0.20, callout: 0.25}
+  footnote_deadline: same_page
+wrapping:
+  min_image_width_pct: 0.25
+  wrap_text_width_max_pct_of_col: 0.60
+  symmetric_band_tolerance_pct: 0.10
+limits:
+  max_aux_per_anchor_per_type: 2
+escalation:
+  bootstrap_pages: 2
+  per_section_bootstrap: 1
+  lcs_tau_page: 0.38
+  lcs_tau_doc: 0.34
+  soft_signal_quorum: 2
+  strong_signal_quorum: 1
+  force_escalate_if_main_pct_below: 0.60
+ocr:
+  enable_on_low_yield: true
+  enable_on_font_anomaly: true
+  dpi: 250
