@@ -53,6 +53,29 @@ The parser loads configuration from `parser/config.yaml`.  Override thresholds
 or escalation behaviour by editing the file or supplying a custom dictionary to
 `DocumentParser`.
 
+### Configuration highlights
+
+The default configuration exposes the following key groups:
+
+* `thresholds`: includes `tau_main`, `tau_main_page_confident`,
+  `tau_fail_safe_low`, heading thresholds, caption overlap ratio and
+  wrap/sidenote heuristics.
+* `bands`: normalised margin/header/footer bands used by the classifier
+  pre-pass.
+* `implicit_section`: controls the implicit section start detector (score
+  threshold, top-of-page window, whitespace halo multiplier, drop-cap toggle
+  and indent delta).
+* `buffering`: limits for auxiliary anchors and next-page windows for captions,
+  sidenotes and callouts.
+* `stitching`: parameters for the paragraph state buffer (split confidence and
+  TTL windows).
+
+### Export format
+
+Auxiliary text is wrapped in `<aux>...</aux>` and section boundaries are surfaced
+as `kind="control"` blocks with `subtype="implicit_section_start"` for
+downstream consumers.
+
 ## Testing
 
 ```bash

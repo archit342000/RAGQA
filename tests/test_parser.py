@@ -163,9 +163,9 @@ def test_document_parser_outputs_normalized_docblocks():
     # Aux buffering: caption and footnotes anchor to previous main block
     caption = next(block for block in docblocks if block["aux_type"] == "caption")
     assert caption["anchor_to"], "Caption should anchor to a main block"
-    footnote = next(block for block in docblocks if block["text"].startswith("1 This"))
+    footnote = next(block for block in docblocks if "1 This" in block["text"])
     assert footnote["anchor_to"], "Footnote should anchor"
-    orphan_footnote = next(block for block in docblocks if block["text"].startswith("3 Footnote"))
+    orphan_footnote = next(block for block in docblocks if "3 Footnote" in block["text"])
     assert orphan_footnote["anchor_to"], "Orphan footnote must fallback to previous page"
     # Aux leakage guard
     aux_main = [block for block in docblocks if block["kind"] == "main" and "Figure" in block["text"]]

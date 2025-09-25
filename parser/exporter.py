@@ -7,6 +7,13 @@ from .stitcher import StitchedBlock
 from .utils import DocBlock, load_config, normalize_bbox
 
 
+def _wrap_aux_text(kind: str, text: str) -> str:
+    cleaned = text or ""
+    if kind == "aux" and cleaned.strip() and not cleaned.strip().startswith("<aux>"):
+        return f"<aux>{cleaned}</aux>"
+    return cleaned
+
+
 def export_docblocks(
     stitched: List[StitchedBlock],
     config: Optional[Dict[str, object]] = None,
@@ -27,12 +34,14 @@ def export_docblocks(
         width = float(block.meta.get("page_width", 1.0) or 1.0)
         height = float(block.meta.get("page_height", 1.0) or 1.0)
         normalized = normalize_bbox(block.bbox, width, height)
+        wrapped_text = _wrap_aux_text(block.kind, block.text)
         docblock = DocBlock(
             id=block_id,
             page=block.page,
             kind=block.kind,
             aux_type=block.aux_type,
-            text=block.text,
+            subtype=block.subtype,
+            text=wrapped_text,
             bbox=normalized,
             flow=block.flow,
             ms=block.ms,

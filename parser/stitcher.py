@@ -13,6 +13,7 @@ class StitchedBlock:
     page: int
     kind: str
     aux_type: Optional[str]
+    subtype: Optional[str]
     text: str
     bbox: Tuple[float, float, float, float]
     flow: str
@@ -53,6 +54,18 @@ class ParagraphStitcher:
                         pending = None
                         pending_ttl = self.ttl_pages
                 current_page = prediction.page
+            if prediction.kind == "control":
+                if pending is not None:
+                    stitched.append(pending)
+                    last_main = pending
+                    pending = None
+                self._flush_aux_buffer(aux_buffer, last_main, stitched)
+                aux_buffer = []
+                control_block = self._from_prediction(prediction)
+                control_block.sources.append((prediction.page, prediction.index))
+                stitched.append(control_block)
+                pending_ttl = self.ttl_pages
+                continue
             if prediction.kind == "main":
                 if pending and self._should_continue(pending, prediction):
                     pending.text = self._join_text(pending.text, prediction.text)
@@ -93,10 +106,13 @@ class ParagraphStitcher:
     def _from_prediction(self, prediction: BlockPrediction) -> StitchedBlock:
         meta = dict(prediction.meta)
         meta.setdefault("sources", [])
+        if prediction.subtype is not None:
+            meta.setdefault("subtype", prediction.subtype)
         return StitchedBlock(
             page=prediction.page,
             kind=prediction.kind,
             aux_type=prediction.aux_type,
+            subtype=getattr(prediction, "subtype", None),
             text=prediction.text,
             bbox=prediction.bbox,
             flow=prediction.flow,

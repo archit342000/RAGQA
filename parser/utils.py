@@ -27,24 +27,42 @@ DEFAULT_CONFIG: Dict[str, object] = {
     "thresholds": {
         "tau_main": 0.60,
         "tau_main_page_confident": 0.55,
+        "tau_fail_safe_low": 0.52,
         "tau_heading_h12": 0.75,
         "tau_heading_h3": 0.60,
+        "caption_h_overlap_min": 0.30,
+        "near_image_lh_multiplier": 1.5,
+        "sidenote_max_width_ratio": 0.50,
+        "sidenote_font_z_max": -0.40,
+        "table_ruling_density": 0.60,
     },
     "bands": {
-        "margin_x_pct": [0.0, 0.12, 0.88, 1.0],
-        "footer_y_pct": 0.88,
+        "margin_x_pct": [0.00, 0.09, 0.91, 1.00],
         "header_y_pct": 0.12,
+        "footer_y_pct": 0.12,
     },
-    "page_turn": {
-        "nextpage_top_window_pct": {"caption": 0.15, "sidenote": 0.20, "callout": 0.25},
-        "footnote_deadline": "same_page",
+    "implicit_section": {
+        "enable": True,
+        "score_threshold": 0.75,
+        "top_region_pct": 0.25,
+        "min_opening_chars": 160,
+        "whitespace_halo_min_lh": 1.2,
+        "dropcap_detect": True,
+        "first_line_indent_delta_px": 8,
+        "chapter_follow_window_pages": 1,
     },
-    "wrapping": {
-        "min_image_width_pct": 0.25,
-        "wrap_text_width_max_pct_of_col": 0.60,
-        "symmetric_band_tolerance_pct": 0.10,
+    "buffering": {
+        "max_aux_per_anchor_per_type": 2,
+        "nextpage_top_window_pct": {
+            "caption": 0.15,
+            "sidenote": 0.20,
+            "callout": 0.25,
+        },
     },
-    "limits": {"max_aux_per_anchor_per_type": 2},
+    "stitching": {
+        "split_confidence_threshold": 0.65,
+        "ttl_pages": {"aux": 1, "pagebreak": 2},
+    },
     "escalation": {
         "bootstrap_pages": 2,
         "per_section_bootstrap": 1,
@@ -189,6 +207,7 @@ class DocBlock:
     page: int
     kind: str
     aux_type: Optional[str]
+    subtype: Optional[str]
     text: str
     bbox: List[float]
     flow: str
@@ -206,6 +225,7 @@ class DocBlock:
             "page": self.page,
             "kind": self.kind,
             "aux_type": self.aux_type,
+            "subtype": self.subtype,
             "text": self.text,
             "bbox": self.bbox,
             "flow": self.flow,
