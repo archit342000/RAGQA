@@ -54,6 +54,7 @@ def export_docblocks(
             attached_across_pages=block.attached_across_pages,
             confidence=block.confidence,
             quarantined=block.quarantined,
+            aux_shadow=block.aux_shadow,
             meta={k: v for k, v in block.meta.items() if k != "sources"},
         )
         docblocks.append(docblock.to_dict())

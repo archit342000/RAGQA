@@ -7,6 +7,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import re
 import statistics
 
+from .heuristics import (
+    CAPTION_RE,
+    aligns_with_body_indent,
+    callout_cues,
+    compute_running_patterns,
+    in_caption_ring,
+    is_running_footer,
+    is_running_header,
+)
+from .states import FlowState, OpenParagraphState
 from .utils import (
     Block,
     DocumentLayout,
@@ -51,37 +61,54 @@ class BlockPrediction:
     expect_continuation: bool = False
     quarantined: bool = False
     anchor_hint: Optional[Tuple[int, int]] = None
+    aux_shadow: bool = False
 
     def copy(self) -> "BlockPrediction":
         return replace(self, reason=list(self.reason), meta=dict(self.meta))
 
 
-def _is_in_active_section(state: Dict[str, Any]) -> bool:
+def _is_in_active_section(state: Any) -> bool:
+    if hasattr(state, "section_state"):
+        return getattr(state, "section_state") != "OUT_OF_SECTION"
     return state.get("section_state", "OUT_OF_SECTION") != "OUT_OF_SECTION"
 
 
-def _bias_to_main_allowed(state: Dict[str, Any]) -> bool:
+def _bias_to_main_allowed(state: Any) -> bool:
     return _is_in_active_section(state)
+
+
+def _state_attr(state: Any, key: str, default: Any = None) -> Any:
+    if hasattr(state, key):
+        return getattr(state, key)
+    if isinstance(state, dict):
+        return state.get(key, default)
+    return default
 
 
 def _page_context(page: PageLayout, cfg: Dict[str, object]) -> Dict[str, Any]:
     bands = cfg.get("bands", {})
     thresholds = cfg.get("thresholds", {})
     margin = bands.get("margin_x_pct", [0.0, 0.09, 0.91, 1.0])
-    header_band = float(bands.get("header_y_pct", 0.12))
-    footer_band = float(bands.get("footer_y_pct", 0.12))
+    header_pct = float(bands.get("header_band_h_pct", bands.get("header_y_pct", 0.12)))
+    footer_pct = float(bands.get("footer_band_h_pct", bands.get("footer_y_pct", 0.12)))
+    body_pct = float(bands.get("body_band_h_pct", 0.76))
     return {
         "page": page,
         "width": float(page.width or 1.0),
         "height": float(page.height or 1.0),
         "margin_left_pct": float(margin[1]),
         "margin_right_pct": float(margin[2]),
-        "header_band": header_band,
-        "footer_band": 1.0 - footer_band,
+        "header_band": header_pct,
+        "footer_band": 1.0 - footer_pct,
+        "header_band_pct": header_pct,
+        "footer_band_pct": footer_pct,
+        "body_band_pct": body_pct,
         "thresholds": thresholds,
         "header_templates": set(slugify(t) for t in page.meta.get("header_templates", []) if t),
         "footer_templates": set(slugify(t) for t in page.meta.get("footer_templates", []) if t),
         "recent_figures": [],
+        "header_band_px": header_pct * float(page.height or 1.0),
+        "footer_band_start_px": (1.0 - footer_pct) * float(page.height or 1.0),
     }
 
 
@@ -619,7 +646,7 @@ def _geometry_continuity(
 
 def flow_safe_decision(
     block: Dict[str, Any],
-    state: Dict[str, Any],
+    state: FlowState,
     stats: BodyStats,
     cfg: Dict[str, Any],
     page_ctx: Dict[str, Any],
@@ -642,8 +669,10 @@ def flow_safe_decision(
         reasons.append("FailSafe")
         if _bias_to_main_allowed(state):
             meta = block.get("meta", {})
-            continuation_pair = bool(meta.get("is_continuation") and state.get("continuing_paragraph"))
-            geometry_ok = _geometry_continuity(state.get("last_main_meta"), meta, stats)
+            state_continuing = _state_attr(state, "continuing_paragraph")
+            continuation_pair = bool(meta.get("is_continuation") and state_continuing)
+            state_last_meta = _state_attr(state, "last_main_meta")
+            geometry_ok = _geometry_continuity(state_last_meta, meta, stats)
             if continuation_pair or geometry_ok:
                 reasons.append("BiasToMainWindow")
         return "main", score, reasons
@@ -667,6 +696,243 @@ def _bbox_distance_sq(b1: Tuple[float, float, float, float], b2: Tuple[float, fl
     dx = ax - bx
     dy = ay - by
     return dx * dx + dy * dy
+
+
+def _augment_distance_features(
+    blocks: List[Dict[str, Any]], figures: List[Dict[str, Any]]
+) -> None:
+    if not figures:
+        return
+    for block in blocks:
+        if block.get("block_type") != "text":
+            continue
+        distances = [
+            _bbox_distance_sq(block["bbox"], fig["bbox"]) ** 0.5 for fig in figures
+        ]
+        if distances:
+            block["meta"]["distance_to_nearest_figure"] = min(distances)
+
+
+def apply_caption_ring_hotfix(
+    blocks: List[Dict[str, Any]],
+    figures: List[Dict[str, Any]],
+    stats: BodyStats,
+    cfg: Dict[str, Any],
+) -> None:
+    if not figures:
+        return
+    ring_cfg = cfg.get("caption_ring", {})
+    heur_cfg = cfg.get("caption_heuristics", {})
+    Rin = float(ring_cfg.get("R_in_px", 32.0))
+    Rout = float(ring_cfg.get("R_out_px", 120.0))
+    max_chars = int(heur_cfg.get("max_chars", 180))
+    allow_trailing_colon = bool(heur_cfg.get("allow_trailing_colon", False))
+
+    for block in blocks:
+        if block.get("block_type") != "text":
+            continue
+        text = (block.get("text") or "").strip()
+        if not text:
+            continue
+        meta = block.setdefault("meta", {})
+        best_fig: Optional[Dict[str, Any]] = None
+        best_distance: Optional[float] = None
+        in_ring = False
+        for fig in figures:
+            if in_caption_ring(block["bbox"], fig["bbox"], Rin, Rout):
+                distance = _bbox_distance_sq(block["bbox"], fig["bbox"]) ** 0.5
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    best_fig = fig
+                    in_ring = True
+        if not in_ring:
+            continue
+        meta["in_caption_ring"] = True
+        if best_distance is not None:
+            meta["distance_to_nearest_figure"] = min(
+                meta.get("distance_to_nearest_figure", best_distance), best_distance
+            )
+
+        cue_regex = bool(CAPTION_RE.match(text))
+        small_font = meta.get("font_size", 0.0) <= (stats.font_size or 0.0) * 0.95
+        single_paragraph = "\n" not in block.get("text", "") and len(text) <= max_chars
+        if not allow_trailing_colon and text.endswith(":"):
+            single_paragraph = False
+        candidate = cue_regex or (small_font and single_paragraph)
+        if not candidate:
+            continue
+        block["kind"] = "aux"
+        block["aux_type"] = "caption"
+        block["flow"] = "aux"
+        block.setdefault("reason", []).append("CaptionRingHit")
+        block["confidence"] = max(block.get("confidence", 0.0), 0.9 if cue_regex else 0.82)
+        block["meta"]["caption_ring_forced"] = True
+        if best_fig:
+            block["anchor_hint"] = (best_fig["page"], best_fig["index"])
+
+
+def apply_callout_hotfix(
+    blocks: List[Dict[str, Any]], stats: BodyStats, cfg: Dict[str, Any]
+) -> None:
+    min_cues = int(cfg.get("callout", {}).get("min_cues_required", 2))
+    indent_tol = float(cfg.get("continuation_guard", {}).get("indent_tolerance_px", 6.0))
+    active: List[Dict[str, Any]] = []
+    collecting = False
+
+    for block in blocks:
+        if block.get("block_type") != "text":
+            if collecting:
+                for collected in active:
+                    collected["kind"] = "aux"
+                    collected["aux_type"] = "callout"
+                    collected["flow"] = "aux"
+                    collected.setdefault("reason", []).append("CalloutCues>=2")
+                active.clear()
+                collecting = False
+            continue
+
+        cue_count, cue_flags = callout_cues(block, stats, cfg)
+        block.setdefault("meta", {})["keyword_cue_strength"] = cue_count
+
+        if not collecting:
+            if cue_count >= min_cues:
+                collecting = True
+                block["meta"]["callout_hotfix"] = True
+                active = [block]
+            continue
+
+        meta = block["meta"]
+        indent = meta.get("indent") or 0.0
+        active_indent = active[0]["meta"].get("indent") if active else stats.indent or 0.0
+        align_main = (
+            abs(indent - (stats.indent or 0.0)) <= indent_tol
+            or indent <= (active_indent or 0.0) - indent_tol
+        )
+        text = (block.get("text") or "").strip()
+        sentence_case = bool(text) and text[0].islower()
+        if align_main and sentence_case:
+            for collected in active:
+                collected["kind"] = "aux"
+                collected["aux_type"] = "callout"
+                collected["flow"] = "aux"
+                collected.setdefault("reason", []).append("CalloutAntiAbsorb")
+            active = []
+            collecting = False
+            continue
+
+        still_inset = cue_flags.get("inset") or cue_flags.get("keyword") or cue_flags.get("leading")
+        if align_main and not still_inset:
+            for collected in active:
+                collected["kind"] = "aux"
+                collected["aux_type"] = "callout"
+                collected["flow"] = "aux"
+                collected.setdefault("reason", []).append("CalloutClose")
+            active = []
+            collecting = False
+            continue
+
+        meta["callout_hotfix"] = True
+        active.append(block)
+
+    if active:
+        for collected in active:
+            collected["kind"] = "aux"
+            collected["aux_type"] = "callout"
+            collected["flow"] = "aux"
+            collected.setdefault("reason", []).append("CalloutCues>=2")
+
+
+def _looks_like_continuation(
+    block: Dict[str, Any], stats: BodyStats, cfg: Dict[str, Any]
+) -> bool:
+    if block.get("block_type") != "text":
+        return False
+    text = (block.get("text") or "").strip()
+    if not text:
+        return False
+    guard_cfg = cfg.get("continuation_guard", {})
+    tol_px = float(guard_cfg.get("indent_tolerance_px", 6.0))
+    if not aligns_with_body_indent(block, stats, tol_px):
+        return False
+    if guard_cfg.get("continuation_lowercase_start", True):
+        first = text.split(None, 1)[0] if text.split() else ""
+        if first and first[0].isupper():
+            return False
+    font_size = block.get("meta", {}).get("font_size") or 0.0
+    if abs(font_size - (stats.font_size or 0.0)) > max(1.5, stats.font_size * 0.2):
+        return False
+    return True
+
+
+def _apply_conflict_resolver(
+    block: Dict[str, Any],
+    state: FlowState,
+    stats: BodyStats,
+    page_ctx: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> Optional[str]:
+    text = (block.get("text") or "").strip()
+    meta = block.get("meta", {})
+    reasons = block.setdefault("reason", [])
+
+    if meta.get("caption_ring_forced"):
+        block["kind"] = "aux"
+        block["aux_type"] = "caption"
+        block["flow"] = "aux"
+        return "aux"
+
+    if text:
+        if is_running_header(text, state.running_header_patterns) and meta.get("top_pct", 1.0) <= page_ctx.get("header_band", 0.12):
+            block["kind"] = "aux"
+            block["aux_type"] = "header"
+            block["flow"] = "aux"
+            block.setdefault("reason", []).append("RunningHeader")
+            block["confidence"] = max(block.get("confidence", 0.0), 0.85)
+            return "aux"
+        if is_running_footer(text, state.running_footer_patterns) and meta.get("bottom_pct", 0.0) >= page_ctx.get("footer_band", 0.88):
+            block["kind"] = "aux"
+            block["aux_type"] = "footer"
+            block["flow"] = "aux"
+            block.setdefault("reason", []).append("RunningFooter")
+            block["confidence"] = max(block.get("confidence", 0.0), 0.83)
+            return "aux"
+
+    if meta.get("callout_hotfix"):
+        block["kind"] = "aux"
+        block["aux_type"] = "callout"
+        block["flow"] = "aux"
+        reasons.append("CalloutHotfix")
+        return "aux"
+
+    if state.open_paragraph and _looks_like_continuation(block, stats, cfg):
+        reasons.append("FalseHeaderGuard")
+        block["kind"] = "main"
+        block["flow"] = "main"
+        return "main"
+
+    return None
+
+
+def _enrich_block_meta(blocks: List[Dict[str, Any]], stats: BodyStats) -> None:
+    for block in blocks:
+        meta = block.get("meta", {})
+        text = block.get("text") or ""
+        if stats.font_size:
+            meta["font_size_ratio_to_body"] = (meta.get("font_size") or 0.0) / stats.font_size
+            meta["leading_ratio_to_body"] = (meta.get("line_height") or 0.0) / stats.font_size
+        else:
+            meta.setdefault("font_size_ratio_to_body", 1.0)
+            meta.setdefault("leading_ratio_to_body", 1.0)
+        meta["margin_alignment_delta"] = abs((meta.get("indent") or 0.0) - (stats.indent or 0.0))
+        longest_line = max((len(line) for line in text.splitlines() if line.strip()), default=len(text))
+        meta["line_length_chars"] = longest_line
+        sentences = [seg for seg in re.split(r"[.!?]+\s+", text) if seg.strip()]
+        if sentences:
+            lowercase = sum(1 for seg in sentences if seg.strip()[:1].islower())
+            meta["sentence_case_ratio"] = lowercase / len(sentences)
+        else:
+            meta.setdefault("sentence_case_ratio", 0.0)
+        meta.setdefault("shaded_or_boxed", False)
 
 
 def _nearest_figure(
@@ -878,6 +1144,7 @@ def _build_predictions(blocks: List[Dict[str, Any]], cfg: Dict[str, Any]) -> Lis
             expect_continuation=bool(block.get("expect_continuation", False)),
             quarantined=bool(block.get("quarantined", False)),
             anchor_hint=block.get("anchor_hint"),
+            aux_shadow=bool(block.get("aux_shadow", False)),
         )
         prediction.meta.setdefault("col_id", block["meta"].get("col_id"))
         prediction.meta.setdefault("open_paragraph_id", block["meta"].get("open_paragraph_id"))
@@ -890,18 +1157,18 @@ def classify_blocks(doc: DocumentLayout, config: Optional[Dict[str, object]] = N
     cfg: Dict[str, Any] = config or load_config()
     thresholds = cfg.get("thresholds", {})
     predictions: List[Dict[str, Any]] = []
-    doc_state: Dict[str, Any] = {
-        "section_state": "OUT_OF_SECTION",
-        "continuing_paragraph": False,
-        "last_main_meta": None,
-    }
-    aux_buffer: List[Dict[str, Any]] = []
-    last_main_record: Optional[Dict[str, Any]] = None
+    state = FlowState()
+    state.section_state = "OUT_OF_SECTION"
+    header_patterns, footer_patterns = compute_running_patterns(doc, cfg)
+    state.running_header_patterns = header_patterns
+    state.running_footer_patterns = footer_patterns
 
     recent_figures: List[Dict[str, Any]] = []
     for page in doc.pages:
         page_ctx = _page_context(page, cfg)
         page_ctx["recent_figures"] = list(recent_figures)
+        page_ctx["running_header_patterns"] = header_patterns
+        page_ctx["running_footer_patterns"] = footer_patterns
         font_mean, font_std = _page_font_stats(page)
         block_records: List[Dict[str, Any]] = []
         figures_for_next: List[Dict[str, Any]] = []
@@ -915,10 +1182,21 @@ def classify_blocks(doc: DocumentLayout, config: Optional[Dict[str, object]] = N
         stitch_paragraphs(block_records, cfg)
         stats = estimate_body_stats(block_records, page_ctx)
         assign_columns_and_wrap(block_records, page_ctx, cfg, stats)
+        _augment_distance_features(block_records, figures_on_page := [b for b in block_records if b["block_type"] in {"figure", "image", "table"}])
+        apply_caption_ring_hotfix(block_records, figures_on_page, stats, cfg)
+        apply_callout_hotfix(block_records, stats, cfg)
+        _enrich_block_meta(block_records, stats)
 
-        figures_on_page = [b for b in block_records if b["block_type"] in {"figure", "image", "table"}]
         for record in block_records:
             record.setdefault("reason", [])
+            text_slug = slugify(record.get("text") or "")
+            if text_slug:
+                if text_slug in header_patterns or text_slug in footer_patterns:
+                    record["meta"]["repetition_score"] = 1.0
+                else:
+                    record["meta"].setdefault("repetition_score", 0.0)
+            else:
+                record["meta"].setdefault("repetition_score", 0.0)
             hs, heading_reasons = _heading_score(record, page, stats, thresholds)
             if hs is not None:
                 record["hs"] = hs
@@ -941,22 +1219,24 @@ def classify_blocks(doc: DocumentLayout, config: Optional[Dict[str, object]] = N
                 record["ms"] = max(record["ms"], 0.9)
                 record["confidence"] = max(record.get("confidence", 0.0), record["ms"])
 
-            if record.get("kind") == "aux" or record["block_type"] != "text":
+            forced = _apply_conflict_resolver(record, state, stats, page_ctx, cfg)
+
+            if record.get("kind") == "aux" or record["block_type"] != "text" or forced == "aux":
                 record["kind"] = "aux"
                 record["aux_type"] = subtype_aux(record, page_ctx, cfg)
                 record["flow"] = "aux"
-                record.setdefault("confidence", 0.72)
-                anchor_aux(record, figures_on_page, last_main_record, cfg)
+                record.setdefault("confidence", 0.7)
+                record["aux_shadow"] = False
+                anchor_aux(record, figures_on_page, state.last_main_record, cfg)
                 maybe_quarantine(record, cfg)
-                aux_buffer.append(record)
+                state.park_aux(record)
                 continue
 
-            if is_heading:
+            if is_heading or forced == "main":
                 decision = "main"
-                score = record["ms"]
-                decision_reasons: List[str] = []
+                score = max(record.get("ms", 0.0), 0.85 if is_heading else record.get("ms", 0.0))
             else:
-                decision, score, decision_reasons = flow_safe_decision(record, doc_state, stats, cfg, page_ctx)
+                decision, score, decision_reasons = flow_safe_decision(record, state, stats, cfg, page_ctx)
                 record["ms"] = score
                 record["reason"].extend(decision_reasons)
 
@@ -965,43 +1245,63 @@ def classify_blocks(doc: DocumentLayout, config: Optional[Dict[str, object]] = N
                 record["aux_type"] = subtype_aux(record, page_ctx, cfg)
                 record["flow"] = "aux"
                 record.setdefault("confidence", 0.58)
-                anchor_aux(record, figures_on_page, last_main_record, cfg)
+                record["aux_shadow"] = False
+                anchor_aux(record, figures_on_page, state.last_main_record, cfg)
                 maybe_quarantine(record, cfg)
-                aux_buffer.append(record)
+                state.park_aux(record)
                 continue
 
             record["kind"] = "main"
             record["flow"] = "main"
             record["confidence"] = max(record.get("confidence", 0.0), score)
             record["expect_continuation"] = _expect_continuation(record)
+            record["aux_shadow"] = False
+            footer_bias_cfg = cfg.get("footer_bias", {})
+            ambiguity_delta = float(footer_bias_cfg.get("ambiguity_delta", 0.1))
+            in_footer_band = record["meta"].get("bottom_pct", 0.0) >= page_ctx.get("footer_band", 0.88)
+            text_slug = slugify(record.get("text") or "")
+            if (
+                in_footer_band
+                and text_slug not in footer_patterns
+                and record["ms"] <= float(thresholds.get("tau_main", 0.6)) + ambiguity_delta
+            ):
+                record["aux_shadow"] = True
+                record.setdefault("reason", []).append("FooterBiasMain")
 
-            control_block = None
-            if not _is_in_active_section(doc_state):
-                control_block = detect_implicit_section_start([record], doc_state, cfg, stats)
+            if not _is_in_active_section(state):
+                control_block = detect_implicit_section_start([record], state, cfg, stats)
                 if control_block:
-                    predictions.extend(aux_buffer)
-                    aux_buffer.clear()
+                    state.flush_aux_if_allowed(predictions, allow_when_open=True)
                     predictions.append(control_block)
-                    doc_state["section_state"] = "IN_SECTION"
-                    doc_state["continuing_paragraph"] = False
+                    state.section_state = "IN_SECTION"
+                    state.continuing_paragraph = False
 
             is_heading = bool(record["meta"].get("heading_level"))
-            if is_heading or not _is_in_active_section(doc_state):
-                predictions.extend(aux_buffer)
-                aux_buffer.clear()
+            if is_heading or not _is_in_active_section(state):
+                state.flush_aux_if_allowed(predictions, allow_when_open=True)
 
             record["reason"] = list(dict.fromkeys(record["reason"]))
             predictions.append(record)
-            doc_state["section_state"] = "IN_SECTION"
-            doc_state["continuing_paragraph"] = bool(record["meta"].get("is_continuation"))
-            doc_state["last_main_meta"] = record.get("meta")
-            last_main_record = record
+            state.section_state = "IN_SECTION"
+            state.continuing_paragraph = bool(record["meta"].get("is_continuation"))
+            state.last_main_meta = record.get("meta")
+            state.last_main_record = record
+            if record["expect_continuation"]:
+                text = record.get("text") or ""
+                last_token = text.split()[-1] if text.split() else ""
+                state.open_paragraph = OpenParagraphState(
+                    source_block_id=f"p{record['page']}_{record['index']}",
+                    last_token=last_token,
+                    needs_hyphen_repair=text.rstrip().endswith("-"),
+                )
+            else:
+                state.clear_open_paragraph()
+                state.flush_aux_if_allowed(predictions)
 
         recent_figures = figures_for_next
 
-    if aux_buffer:
-        doc_state["section_state"] = "OUT_OF_SECTION"
-        predictions.extend(aux_buffer)
-        aux_buffer.clear()
+    if state.aux_buffer:
+        state.section_state = "OUT_OF_SECTION"
+        state.flush_aux(predictions)
 
     return _build_predictions(predictions, cfg)

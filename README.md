@@ -30,6 +30,22 @@ across page breaks and exports normalised blocks with provenance metadata.
 * **Auxiliary buffering and anchoring:** aux blocks are buffered and flushed
   only at section boundaries, anchored to the nearest narrative block with a
   footnote fallback to the previous page.
+* **Page zoning & running header guards:** advisory header/footer/body bands
+  combine with cross-page repetition tracking to demote running heads/feet
+  while allowing genuine paragraph continuations inside the top/bottom bands.
+* **Caption ring anchoring:** a 32–120 px caption ring around detected figures
+  forces nearby small-font or cue-matched captions into `aux(caption)` and
+  relinks them to the owning figure, eliminating caption leakage into main.
+* **Callout anti-absorption:** activity/callout blocks require dual cues
+  (lexical + inset/leading) and snap shut when lines realign to the body margin,
+  preventing footer mislabels from swallowing surrounding paragraphs.
+* **Continuation guard & aux parking:** an open-paragraph state machine parks
+  page-top aux blocks until the continuation arrives, then flushes them only
+  after the paragraph closes or a new section header is confirmed.
+* **Conflict resolver with `aux_shadow`:** ordered heuristics (captions → running
+  headers/footers → callouts → continuation guard) resolve disagreements while
+  tagging borderline footer-as-main cases with `aux_shadow=true` for downstream
+  auditing.
 * **Quarantined auxiliary mode:** low-confidence aux blocks are tagged as
   `quarantined` so they can be surfaced to consumers without perturbing the
   stitching or section state machine.
@@ -37,7 +53,7 @@ across page breaks and exports normalised blocks with provenance metadata.
   demotion and activity grouping run after classification to eliminate caption
   leakage and over-eager header detection.
 * **DocBlock export:** emits normalised bounding boxes and structured metadata
-  (including `region_tag`, `quarantined` and `anchor_to`) compliant with the
+  (including `region_tag`, `quarantined`, `aux_shadow` and `anchor_to`) compliant with the
   provided schema.
 
 ## Setup

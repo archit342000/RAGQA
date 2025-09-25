@@ -220,6 +220,7 @@ class DocBlock:
     confidence: float
     quarantined: bool
     meta: Dict[str, float | str | int | bool]
+    aux_shadow: bool = False
 
     def to_dict(self) -> Dict[str, object]:
         payload = {
@@ -239,6 +240,7 @@ class DocBlock:
             "attached_across_pages": self.attached_across_pages,
             "confidence": self.confidence,
             "quarantined": self.quarantined,
+            "aux_shadow": self.aux_shadow,
             "meta": self.meta,
         }
         return payload

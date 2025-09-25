@@ -28,6 +28,7 @@ class StitchedBlock:
     quarantined: bool = False
     anchor_hint: Optional[Tuple[int, int]] = None
     region_tag: Optional[str] = None
+    aux_shadow: bool = False
 
 
 class ParagraphStitcher:
@@ -128,6 +129,7 @@ class ParagraphStitcher:
             quarantined=prediction.quarantined,
             anchor_hint=prediction.anchor_hint,
             region_tag=meta.get("region_tag"),
+            aux_shadow=prediction.aux_shadow,
         )
 
     def _join_text(self, left: str, right: str) -> str:
