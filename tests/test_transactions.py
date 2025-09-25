@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from pdfchunks.parsing.block_extractor import Block
 from pdfchunks.parsing.classifier import BlockLabel
 from pdfchunks.parsing.ownership import SectionAssignment
@@ -22,7 +20,7 @@ def make_block(block_id: str, text: str) -> Block:
     )
 
 
-def test_aux_before_lead_paragraph_raises():
+def test_aux_before_lead_paragraph_redirects_to_preamble_when_no_prior_lead():
     tm = TransactionManager()
     heading = SectionAssignment(
         label=BlockLabel(block=make_block("h", "Heading"), role="MAIN", is_heading=True, section_level=1),
@@ -35,8 +33,12 @@ def test_aux_before_lead_paragraph_raises():
         section_seq=1,
         owner_section_seq=1,
     )
-    with pytest.raises(ValueError):
-        tm.enqueue_aux(aux_assignment)
+    tm.enqueue_aux(aux_assignment)
+    tm.seal(1)
+    tm.seal(0)
+    drained = tm.drain_aux(0)
+    assert len(drained) == 1
+    assert drained[0].owner_section_seq == 0
 
 
 def test_aux_before_lead_reassigned_to_previous_section():

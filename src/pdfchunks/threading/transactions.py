@@ -68,21 +68,29 @@ class TransactionManager:
         if not section.lead_paragraph_seen:
             if owner_seq == 0:
                 section.lead_paragraph_seen = True
+                if self._last_section_with_lead is None:
+                    self._last_section_with_lead = 0
             else:
                 fallback_seq = self._last_section_with_lead
-                if fallback_seq is None or fallback_seq == owner_seq:
-                    raise ValueError("AUX cannot appear before the lead paragraph in a section")
-                section = self._sections.setdefault(
-                    fallback_seq, SectionTransaction(section_seq=fallback_seq)
-                )
-                if not section.lead_paragraph_seen:
+                if fallback_seq is None:
+                    fallback_seq = 0
+                if fallback_seq != owner_seq:
+                    fallback_section = self._sections.setdefault(
+                        fallback_seq, SectionTransaction(section_seq=fallback_seq)
+                    )
+                    if not fallback_section.lead_paragraph_seen:
+                        fallback_section.lead_paragraph_seen = True
+                    assignment = SectionAssignment(
+                        label=assignment.label,
+                        section_seq=assignment.section_seq,
+                        owner_section_seq=fallback_seq,
+                    )
+                    section = fallback_section
+                    owner_seq = fallback_seq
+                else:
                     section.lead_paragraph_seen = True
-                assignment = SectionAssignment(
-                    label=assignment.label,
-                    section_seq=assignment.section_seq,
-                    owner_section_seq=fallback_seq,
-                )
-                owner_seq = fallback_seq
+                if self._last_section_with_lead is None:
+                    self._last_section_with_lead = owner_seq
 
         section.enqueue_aux(assignment)
         self.delayed_aux_flush[owner_seq] = len(section.aux_queue)
@@ -100,6 +108,8 @@ class TransactionManager:
             )
             if not fallback_section.lead_paragraph_seen:
                 fallback_section.lead_paragraph_seen = True
+                if self._last_section_with_lead is None:
+                    self._last_section_with_lead = fallback
             reassigned: Deque[SectionAssignment] = deque()
             while section.aux_queue:
                 assignment = section.aux_queue.popleft()

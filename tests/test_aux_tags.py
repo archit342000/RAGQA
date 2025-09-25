@@ -36,3 +36,14 @@ def test_all_aux_units_and_chunks_wrapped():
         if chunk.role == "AUX":
             assert chunk.text.startswith("<aux>") and chunk.text.strip().endswith("</aux>")
 
+
+def test_preamble_aux_passes_audit_without_main_sentences():
+    config = ParserConfig()
+    units = [
+        make_unit("<aux>Front matter</aux>", para=0, sent=0, emit_phase=1, section=0, subtype="callout"),
+    ]
+    result = ThreadResult(units=units, delayed_aux_counts={0: 1})
+    chunker = Chunker(config.chunker)
+    chunks = chunker.chunk(units)
+    run_audits(result, chunks, config.audits)
+
