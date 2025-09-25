@@ -8,8 +8,10 @@ from .utils import DocBlock, load_config, normalize_bbox
 
 
 def _wrap_aux_text(kind: str, text: str) -> str:
-    cleaned = text or ""
-    if kind == "aux" and cleaned.strip() and not cleaned.strip().startswith("<aux>"):
+    cleaned = (text or "").strip()
+    if kind == "aux":
+        if cleaned.startswith("<aux>") and cleaned.endswith("</aux>"):
+            return cleaned
         return f"<aux>{cleaned}</aux>"
     return cleaned
 
@@ -50,6 +52,7 @@ def export_docblocks(
             anchor_to=anchor_id,
             attached_across_pages=block.attached_across_pages,
             confidence=block.confidence,
+            quarantined=block.quarantined,
             meta={k: v for k, v in block.meta.items() if k != "sources"},
         )
         docblocks.append(docblock.to_dict())

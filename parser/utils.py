@@ -217,6 +217,7 @@ class DocBlock:
     anchor_to: Optional[str]
     attached_across_pages: bool
     confidence: float
+    quarantined: bool
     meta: Dict[str, float | str | int | bool]
 
     def to_dict(self) -> Dict[str, object]:
@@ -235,6 +236,7 @@ class DocBlock:
             "anchor_to": self.anchor_to,
             "attached_across_pages": self.attached_across_pages,
             "confidence": self.confidence,
+            "quarantined": self.quarantined,
             "meta": self.meta,
         }
         return payload

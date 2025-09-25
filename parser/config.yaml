@@ -9,10 +9,18 @@ thresholds:
   sidenote_max_width_ratio: 0.50
   sidenote_font_z_max: -0.40
   table_ruling_density: 0.60
+  quarantined_aux_conf_min: 0.65
 bands:
-  margin_x_pct: [0.00,0.09,0.91,1.00]
+  margin_x_pct: [0.00, 0.09, 0.91, 1.00]
   header_y_pct: 0.12
   footer_y_pct: 0.12
+caption:
+  extended_merge_max_chars: 220
+  near_image_lh_multiplier: 1.5
+  horiz_overlap_min: 0.30
+sidenote:
+  max_width_ratio: 0.50
+  font_z_max: -0.40
 implicit_section:
   enable: true
   score_threshold: 0.75
@@ -22,15 +30,20 @@ implicit_section:
   dropcap_detect: true
   first_line_indent_delta_px: 8
   chapter_follow_window_pages: 1
-buffering:
+  only_when_no_section: true
+stitching:
+  split_confidence_threshold: 0.65
+  top_lookahead_pct: 0.30
+buffers:
   max_aux_per_anchor_per_type: 2
+page_turn:
   nextpage_top_window_pct:
     caption: 0.15
     sidenote: 0.20
     callout: 0.25
-stitching:
-  split_confidence_threshold: 0.65
-  ttl_pages: {aux:1, pagebreak:2}
+source_label:
+  strategy: free_aux
+  distance_px_max: 120
 escalation:
   bootstrap_pages: 2
   per_section_bootstrap: 1

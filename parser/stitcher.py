@@ -25,6 +25,8 @@ class StitchedBlock:
     sources: List[Tuple[int, int]] = field(default_factory=list)
     attached_across_pages: bool = False
     anchor_source: Optional[Tuple[int, int]] = None
+    quarantined: bool = False
+    anchor_hint: Optional[Tuple[int, int]] = None
 
 
 class ParagraphStitcher:
@@ -122,6 +124,8 @@ class ParagraphStitcher:
             confidence=prediction.confidence,
             meta=meta,
             sources=[],
+            quarantined=prediction.quarantined,
+            anchor_hint=prediction.anchor_hint,
         )
 
     def _join_text(self, left: str, right: str) -> str:
@@ -175,15 +179,34 @@ class ParagraphStitcher:
             return
         if anchor is None and stitched:
             anchor = self._last_main(stitched)
+        created: Dict[Tuple[int, int], StitchedBlock] = {}
         for prediction in aux_buffer:
             block = self._from_prediction(prediction)
-            block.sources.append((prediction.page, prediction.index))
-            block.anchor_source = anchor.sources[0] if anchor and anchor.sources else None
-            block.attached_across_pages = (
-                anchor is not None and anchor.page != prediction.page
-            )
+            source_key = (prediction.page, prediction.index)
+            block.sources.append(source_key)
+            created[source_key] = block
+            target_anchor = None
+            if prediction.anchor_hint:
+                target_anchor = created.get(prediction.anchor_hint)
+                if target_anchor is None:
+                    target_anchor = self._resolve_anchor(prediction.anchor_hint, stitched)
+            if target_anchor is None:
+                target_anchor = anchor
+            if target_anchor is None and stitched:
+                target_anchor = self._last_main(stitched)
+            if target_anchor and target_anchor.sources:
+                block.anchor_source = target_anchor.sources[0]
+                block.attached_across_pages = target_anchor.page != prediction.page
             stitched.append(block)
         aux_buffer.clear()
+
+    def _resolve_anchor(
+        self, hint: Tuple[int, int], stitched: List[StitchedBlock]
+    ) -> Optional[StitchedBlock]:
+        for block in reversed(stitched):
+            if hint in block.sources:
+                return block
+        return None
 
     def _last_main(self, stitched: List[StitchedBlock]) -> Optional[StitchedBlock]:
         for block in reversed(stitched):
