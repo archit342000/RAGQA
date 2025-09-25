@@ -27,6 +27,7 @@ class StitchedBlock:
     anchor_source: Optional[Tuple[int, int]] = None
     quarantined: bool = False
     anchor_hint: Optional[Tuple[int, int]] = None
+    region_tag: Optional[str] = None
 
 
 class ParagraphStitcher:
@@ -126,6 +127,7 @@ class ParagraphStitcher:
             sources=[],
             quarantined=prediction.quarantined,
             anchor_hint=prediction.anchor_hint,
+            region_tag=meta.get("region_tag"),
         )
 
     def _join_text(self, left: str, right: str) -> str:

@@ -137,6 +137,7 @@ def _block_record(
         "open_paragraph_id": None,
         "page_width": page_width,
         "page_height": page_height,
+        "region_tag": block.attrs.get("region_tag"),
     }
     record = {
         "page": page.page_number,
@@ -149,6 +150,7 @@ def _block_record(
         "bbox": block.bbox,
         "block_type": block.block_type,
         "meta": meta,
+        "region_tag": meta.get("region_tag"),
         "flow": "main",
         "reason": [],
         "ms": 0.0,
@@ -192,6 +194,13 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
         re.compile(r"\b(activity|try\s+this|project|practice)\b", re.IGNORECASE),
         re.compile(r"\b(let's\s+do|hands[- ]on)\b", re.IGNORECASE),
     ]
+    activity_cfg = cfg.get("activity", {})
+    cue_regex = activity_cfg.get("cue_regex")
+    if isinstance(cue_regex, str):
+        try:
+            activity_patterns.insert(0, re.compile(cue_regex, re.IGNORECASE))
+        except re.error:
+            pass
     source_pattern = re.compile(r"^(source|courtesy|credit|from)\b", re.IGNORECASE)
     page_number_pattern = re.compile(r"^(\d+|[ivxlcdm]+)$", re.IGNORECASE)
     boxed_pattern = re.compile(r"\b(callout|remember|note)\b", re.IGNORECASE)
@@ -203,6 +212,7 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
 
     for idx, block in enumerate(blocks):
         meta = block["meta"]
+        region_tag = meta.get("region_tag")
         text = (block.get("text") or "").strip()
         text_slug = slugify(text)
         text_lower = text.lower()
@@ -236,7 +246,7 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
 
         font_z = meta.get("font_z", 0.0)
 
-        if top_pct <= header_band:
+        if top_pct <= header_band and region_tag in {None, "title", "text"}:
             if page_number_pattern.match(text.replace(" ", "")):
                 block["kind"] = "aux"
                 block["aux_type"] = "page_number"
@@ -259,7 +269,7 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
                 reasons.append("PrepassA:HeaderBand")
                 continue
 
-        if bottom_pct >= footer_band:
+        if bottom_pct >= footer_band and region_tag in {None, "title", "text"}:
             if page_number_pattern.match(text.replace(" ", "")):
                 block["kind"] = "aux"
                 block["aux_type"] = "page_number"
@@ -341,7 +351,7 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
             reasons.append("PrepassA:CalloutLexical")
             continue
 
-        if text_lower.startswith(("figure", "fig.", "table")):
+        if text_lower.startswith(("figure", "fig.", "table")) and region_tag in {None, "text", "figure", "list"}:
             nearest: Optional[Dict[str, Any]] = None
             overlap = 0.0
             for fig_idx, fig in figure_records.items():
@@ -617,6 +627,8 @@ def flow_safe_decision(
     thresholds = cfg.get("thresholds", {})
     tau = float(thresholds.get("tau_main", 0.6))
     tau_low = float(thresholds.get("tau_fail_safe_low", 0.52))
+    tau_bias_high = float(thresholds.get("tau_bias_high", 0.65))
+    tau_bias_high = max(tau_bias_high, tau)
     score = block.get("ms")
     reasons: List[str] = []
     if score is None:
@@ -626,7 +638,7 @@ def flow_safe_decision(
     if score >= tau:
         reasons.append("AboveTauMain")
         return "main", score, reasons
-    if tau_low <= score < tau and not block.get("aux_type"):
+    if tau_low <= score < tau_bias_high and not block.get("aux_type"):
         reasons.append("FailSafe")
         if _bias_to_main_allowed(state):
             meta = block.get("meta", {})
@@ -869,6 +881,7 @@ def _build_predictions(blocks: List[Dict[str, Any]], cfg: Dict[str, Any]) -> Lis
         )
         prediction.meta.setdefault("col_id", block["meta"].get("col_id"))
         prediction.meta.setdefault("open_paragraph_id", block["meta"].get("open_paragraph_id"))
+        prediction.meta.setdefault("region_tag", block.get("region_tag"))
         predictions.append(prediction)
     return predictions
 

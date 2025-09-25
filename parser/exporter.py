@@ -45,6 +45,7 @@ def export_docblocks(
             subtype=block.subtype,
             text=wrapped_text,
             bbox=normalized,
+            region_tag=block.region_tag,
             flow=block.flow,
             ms=block.ms,
             hs=block.hs,

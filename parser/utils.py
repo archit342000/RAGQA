@@ -210,6 +210,7 @@ class DocBlock:
     subtype: Optional[str]
     text: str
     bbox: List[float]
+    region_tag: Optional[str]
     flow: str
     ms: float
     hs: Optional[float]
@@ -229,6 +230,7 @@ class DocBlock:
             "subtype": self.subtype,
             "text": self.text,
             "bbox": self.bbox,
+            "region_tag": self.region_tag,
             "flow": self.flow,
             "ms": self.ms,
             "hs": self.hs,
