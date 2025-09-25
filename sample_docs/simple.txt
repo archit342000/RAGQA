@@ -1,5 +1,0 @@
-Simple text fixture
-
-This plain text file checks the non-PDF parsing route.
-It uses form-feed characters to simulate page breaks.
-Second page of the text fixture for coverage.
