@@ -26,9 +26,9 @@ BBox = Tuple[float, float, float, float]
 DEFAULT_CONFIG: Dict[str, object] = {
     "detector": {
         "engine": "onnxruntime",
-        "model_path": "models/doclayout_yolov8n.onnx",
-        "score_thresh": 0.30,
-        "nms_iou": 0.50,
+        "model_path": "models/doclayout_yolov8l.onnx",
+        "score_thresh": 0.35,
+        "nms_iou": 0.6,
         "target_classes": [
             "paragraph",
             "title",
@@ -89,12 +89,32 @@ DEFAULT_CONFIG: Dict[str, object] = {
             "callout": 0.25,
         },
     },
+    "post_pass": {
+        "enable": True,
+        "order": [
+            "stitch_first",
+            "peel_captions",
+            "shrink_caption_bounds",
+            "demote_headers",
+            "group_activity",
+            "dedup_quarantine",
+        ],
+    },
     "stitching": {
         "split_confidence_threshold": 0.65,
+        "split_confidence": 0.65,
         "top_lookahead_pct": 0.30,
         "ttl_pages": {"aux": 1, "pagebreak": 2},
     },
     "fallback": {"enable_post_pass_repairer": True},
+    "buffers": {"max_aux_per_anchor_per_type": 2},
+    "page_turn": {
+        "nextpage_top_window_pct": {
+            "caption": 0.15,
+            "sidenote": 0.20,
+            "callout": 0.25,
+        },
+    },
     "escalation": {
         "bootstrap_pages": 2,
         "per_section_bootstrap": 1,
@@ -103,12 +123,53 @@ DEFAULT_CONFIG: Dict[str, object] = {
         "soft_signal_quorum": 2,
         "strong_signal_quorum": 1,
         "force_escalate_if_main_pct_below": 0.60,
+        "use_pp_structure": True,
     },
     "ocr": {
         "enable_on_low_yield": True,
         "enable_on_font_anomaly": True,
         "dpi": 250,
     },
+    "caption": {
+        "ring_inner_px": 24,
+        "ring_outer_px": 120,
+        "horiz_overlap_min": 0.30,
+        "near_image_lh_multiplier": 1.5,
+        "extended_merge_max_chars": 220,
+    },
+    "caption_ring": {"R_in_px": 32, "R_out_px": 120},
+    "caption_heuristics": {"max_chars": 180, "allow_trailing_colon": False},
+    "activity": {"cue_regex": "^(Activity|Let’s|Discuss|Recall|Think|Try)\\b"},
+    "callout": {
+        "min_inset_px": 12,
+        "max_width_ratio_vs_body": 0.85,
+        "min_cues_required": 2,
+        "min_leading_ratio_delta": 0.10,
+        "iou_merge_thresh": 0.3,
+        "cues": ["Activity", "Discuss", "Think", "Did you know", "Recall"],
+    },
+    "header_footer": {
+        "heading_size_jump_min_ratio": 1.20,
+        "heading_short_word_max": 8,
+        "require_running_pattern_for_footer": True,
+        "repetition_pages": 3,
+        "vertical_jitter_px": 20,
+        "regex": ["OUR PASTS\\s+\\d+", "Reprint\\s+\\d{4}-\\d{2,4}"],
+    },
+    "sidenote": {"max_width_ratio": 0.50, "font_z_max": -0.40},
+    "continuation_guard": {
+        "indent_tolerance_px": 6,
+        "continuation_lowercase_start": True,
+    },
+    "footer_bias": {"ambiguity_delta": 0.10},
+    "section_detection": {
+        "gap_leading_min_ratio": 1.5,
+        "allow_dropcap_or_indent_reset_at_top": True,
+        "bold_leadin_colon_allows_section": True,
+    },
+    "composite_score": {"delta_borderline": 0.10},
+    "bias": {"aux_conf_min": 0.6},
+    "source_label": {"strategy": "free_aux", "distance_px_max": 120},
 }
 
 

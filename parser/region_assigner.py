@@ -65,6 +65,7 @@ def assign_regions(
     detections: Sequence[Dict[str, object]],
     *,
     allow_override: bool = True,
+    ocr_lines: Optional[Sequence[Dict[str, object]]] = None,
 ) -> None:
     """Annotate blocks on ``page`` with detector provided region tags.
 
@@ -98,6 +99,9 @@ def assign_regions(
             }
         )
 
+    if ocr_lines:
+        page.meta["ocr_lines"] = list(ocr_lines)
+
     for block in block_lookup:
         if not allow_override and block.attrs.get("region_tag"):
             continue
@@ -105,6 +109,7 @@ def assign_regions(
         block.attrs.pop("region_score", None)
         block.attrs.pop("region_id", None)
         block.attrs.pop("region_bbox", None)
+        block.attrs.pop("ocr_lines", None)
 
         scores: Dict[str, float] = {}
         best_detection: Optional[Dict[str, object]] = None
@@ -129,4 +134,16 @@ def assign_regions(
             block.attrs["region_score"] = float(best_detection.get("score", 0.0))
             block.attrs["region_id"] = best_detection.get("id")
             block.attrs["region_bbox"] = best_detection.get("bbox")
+
+        if ocr_lines:
+            overlaps: List[Dict[str, object]] = []
+            for line in ocr_lines:
+                bbox_pdf = line.get("bbox_pdf") or line.get("bbox")
+                if not isinstance(bbox_pdf, (list, tuple)) or len(bbox_pdf) != 4:
+                    continue
+                if _bbox_iou(block.bbox, bbox_pdf) <= 0:
+                    continue
+                overlaps.append(line)
+            if overlaps:
+                block.attrs["ocr_lines"] = overlaps
 

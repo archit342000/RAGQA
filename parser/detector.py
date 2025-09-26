@@ -70,6 +70,9 @@ class LayoutDetector:
     # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
+    def _providers(self) -> List[str]:  # pragma: no cover - simple configuration hook
+        return ["CPUExecutionProvider"]
+
     def _ensure_session(self) -> Optional["ort.InferenceSession"]:
         if self._session_initialised:
             return self._session
@@ -79,13 +82,19 @@ class LayoutDetector:
         model_path = self.config.model_path
         if not model_path or not model_path.exists():
             return None
+        providers = self._providers()
         try:  # pragma: no cover - heavy runtime path
-            session = ort.InferenceSession(
-                str(model_path),
-                providers=["CPUExecutionProvider"],
-            )
+            session = ort.InferenceSession(str(model_path), providers=providers)
         except Exception:
-            return None
+            if providers != ["CPUExecutionProvider"]:
+                try:  # pragma: no cover - fallback to CPU
+                    session = ort.InferenceSession(
+                        str(model_path), providers=["CPUExecutionProvider"]
+                    )
+                except Exception:
+                    return None
+            else:
+                return None
         inputs = session.get_inputs()
         outputs = session.get_outputs()
         if not inputs or not outputs:
@@ -177,15 +186,24 @@ class LayoutDetector:
         else:  # pragma: no cover - convert RGBA to RGB
             array = np.frombuffer(samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
             array = array[:, :, :3]
-        detections = self.detect(array)
+        return self.detect_from_image(array, scale)
+
+    # ------------------------------------------------------------------
+    def detect_from_image(
+        self, image: "np.ndarray", scale: float
+    ) -> List[Dict[str, Any]]:
+        if np is None or image is None or scale == 0:
+            return []
+        detections = self.detect(image)
         results: List[Dict[str, Any]] = []
-        for det in detections:
+        for idx, det in enumerate(detections):
             bbox = det.get("bbox")
             if not bbox:
                 continue
             pdf_box = _scale_bbox(_as_float_box(bbox), scale)
             results.append(
                 {
+                    "id": det.get("id", f"det_img_{idx}"),
                     "cls": det.get("cls", ""),
                     "score": float(det.get("score", 0.0)),
                     "bbox_pdf": pdf_box,

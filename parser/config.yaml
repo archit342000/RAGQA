@@ -21,12 +21,12 @@ thresholds:
   table_ruling_density: 0.60
   quarantined_aux_conf_min: 0.65
 detector:
-  engine: onnxruntime
-  model_path: models/doclayout_yolov8n.onnx
-  score_thresh: 0.30
-  nms_iou: 0.50
-  target_classes: [paragraph, title, caption, figure, table, list, sidebar, header, footer, page_num]
+  model_path: models/doclayout_yolov8l.onnx
+  score_thresh: 0.35
+  nms_iou: 0.6
   dpi: 180
+  engine: onnxruntime
+  target_classes: [paragraph, title, caption, figure, table, list, sidebar, header, footer, page_num]
 anchoring:
   caption_ring_inner_px: 24
   caption_ring_outer_px: 120
@@ -46,8 +46,10 @@ repetition:
   min_pages: 3
   max_vertical_jitter_px: 20
 caption:
-  near_image_lh_multiplier: 1.5
+  ring_inner_px: 24
+  ring_outer_px: 120
   horiz_overlap_min: 0.30
+  near_image_lh_multiplier: 1.5
   extended_merge_max_chars: 220
 caption_ring:
   R_in_px: 32
@@ -62,6 +64,8 @@ callout:
   max_width_ratio_vs_body: 0.85
   min_cues_required: 2
   min_leading_ratio_delta: 0.10
+  iou_merge_thresh: 0.3
+  cues: ["Activity", "Discuss", "Think", "Did you know", "Recall"]
 sidenote:
   max_width_ratio: 0.50
   font_z_max: -0.40
@@ -69,6 +73,9 @@ header_footer:
   heading_size_jump_min_ratio: 1.20
   heading_short_word_max: 8
   require_running_pattern_for_footer: true
+  repetition_pages: 3
+  vertical_jitter_px: 20
+  regex: ["OUR PASTS\\s+\\d+", "Reprint\\s+\\d{4}-\\d{2,4}"]
 continuation_guard:
   indent_tolerance_px: 6
   continuation_lowercase_start: true
@@ -97,6 +104,7 @@ implicit_section:
   only_when_no_section: true
 stitching:
   split_confidence_threshold: 0.65
+  split_confidence: 0.65
   top_lookahead_pct: 0.30
   ttl_pages: {aux: 1, pagebreak: 2}
 post_pass:
@@ -114,6 +122,8 @@ fallback:
 source_label:
   strategy: free_aux
   distance_px_max: 120
+bias:
+  aux_conf_min: 0.6
 ocr:
   enable_on_low_yield: true
   enable_on_font_anomaly: true

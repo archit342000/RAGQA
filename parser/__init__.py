@@ -4,6 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
+try:  # pragma: no cover - optional dependency in tests
+    import numpy as np
+except Exception:  # pragma: no cover
+    np = None  # type: ignore
+
 from .classifier import classify_blocks
 try:  # pragma: no cover - optional dependency
     import fitz  # type: ignore
@@ -11,11 +16,13 @@ except Exception:  # pragma: no cover - keep runtime optional
     fitz = None
 
 from .detector import LayoutDetector
+from .detector_gpu import detect_layout_gpu
 from .exporter import export_docblocks
 from .extractor import BaseExtractor, ExtractionPipeline, build_pipeline
 from .merger import merge_layouts
 from .post_pass_repair import layout_repair
 from .pp_structure import pp_structure_layout, tag_blocks_with_regions
+from .ocr_lines import detect_lines_and_ocr
 from .region_assigner import assign_regions
 from .stitcher import stitch_predictions
 from .utils import load_config
@@ -53,15 +60,44 @@ class DocumentParser:
                 detector_doc = None
         try:
             for page in merged.pages:
-                detections = []
-                if detector_doc is not None:
+                detections: List[Dict[str, object]] = []
+                ocr_lines: List[Dict[str, object]] = []
+                scale = None
+                image_array = None
+                if detector_doc is not None and fitz is not None and np is not None:
+                    try:
+                        doc_page = detector_doc.load_page(page.page_number)
+                        scale = self.detector.config.dpi / 72.0
+                        matrix = fitz.Matrix(scale, scale)
+                        pix = doc_page.get_pixmap(matrix=matrix, alpha=False)
+                        if not pix.samples:
+                            raise ValueError("pixmap has no samples")
+                        samples = np.frombuffer(pix.samples, dtype=np.uint8)
+                        image_array = samples.reshape(pix.height, pix.width, pix.n)
+                        if pix.n == 1:
+                            image_array = np.repeat(image_array, 3, axis=2)
+                        elif pix.n >= 4:
+                            image_array = image_array[:, :, :3]
+                        page.meta.setdefault("page_width", float(doc_page.rect.width))
+                        page.meta.setdefault("page_height", float(doc_page.rect.height))
+                        page.meta["raster_scale"] = scale
+                    except Exception:
+                        image_array = None
+                        scale = None
+                if image_array is not None and scale:
+                    detections = detect_layout_gpu(image_array, scale, self.config)
+                    if not detections:
+                        detections = self.detector.detect_from_image(image_array, scale)
+                    ocr_lines = detect_lines_and_ocr(image_array, scale, self.config)
+                if not detections and detector_doc is not None:
                     try:
                         detections = self.detector.detect_page(detector_doc, page.page_number)
                     except Exception:
                         detections = []
                 page.meta["detector_regions"] = detections
-                if detections:
-                    assign_regions(page, detections, allow_override=True)
+                if ocr_lines:
+                    page.meta["ocr_lines"] = ocr_lines
+                assign_regions(page, detections, allow_override=True, ocr_lines=ocr_lines)
                 if use_pp:
                     regions = pp_structure_layout(page, pdf_path=pdf_path, cfg=self.config)
                     if detections:
