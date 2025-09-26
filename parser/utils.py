@@ -24,6 +24,33 @@ BBox = Tuple[float, float, float, float]
 
 
 DEFAULT_CONFIG: Dict[str, object] = {
+    "detector": {
+        "engine": "onnxruntime",
+        "model_path": "models/doclayout_yolov8n.onnx",
+        "score_thresh": 0.30,
+        "nms_iou": 0.50,
+        "target_classes": [
+            "paragraph",
+            "title",
+            "caption",
+            "figure",
+            "table",
+            "list",
+            "sidebar",
+            "header",
+            "footer",
+            "page_num",
+        ],
+        "dpi": 180,
+    },
+    "anchoring": {
+        "caption_ring_inner_px": 24,
+        "caption_ring_outer_px": 120,
+        "horiz_overlap_min": 0.30,
+    },
+    "sidebar": {
+        "iou_merge_thresh": 0.30,
+    },
     "thresholds": {
         "tau_main": 0.60,
         "tau_main_page_confident": 0.55,
@@ -40,6 +67,9 @@ DEFAULT_CONFIG: Dict[str, object] = {
         "margin_x_pct": [0.00, 0.09, 0.91, 1.00],
         "header_y_pct": 0.12,
         "footer_y_pct": 0.12,
+    },
+    "sectioning": {
+        "implicit_start_top_pct": 0.25,
     },
     "implicit_section": {
         "enable": True,
@@ -61,8 +91,10 @@ DEFAULT_CONFIG: Dict[str, object] = {
     },
     "stitching": {
         "split_confidence_threshold": 0.65,
+        "top_lookahead_pct": 0.30,
         "ttl_pages": {"aux": 1, "pagebreak": 2},
     },
+    "fallback": {"enable_post_pass_repairer": True},
     "escalation": {
         "bootstrap_pages": 2,
         "per_section_bootstrap": 1,

@@ -67,6 +67,135 @@ class BlockPrediction:
         return replace(self, reason=list(self.reason), meta=dict(self.meta))
 
 
+def _margin_bounds(cfg: Dict[str, Any]) -> Tuple[float, float]:
+    bands = cfg.get("bands", {})
+    margins = bands.get("margin_x_pct", [0.0, 0.09, 0.91, 1.0])
+    left = float(margins[1] if len(margins) > 1 else 0.09)
+    right = float(margins[2] if len(margins) > 2 else 0.91)
+    return left, right
+
+
+def _apply_detector_overrides(
+    blocks: List[Dict[str, Any]],
+    page_ctx: Dict[str, Any],
+    cfg: Dict[str, Any],
+    figure_records: Dict[int, Dict[str, Any]],
+) -> List[int]:
+    forced_captions: List[int] = []
+    left_margin, right_margin = _margin_bounds(cfg)
+    section_cfg = cfg.get("sectioning", {})
+    section_top = float(section_cfg.get("implicit_start_top_pct", 0.25))
+    for idx, block in enumerate(blocks):
+        meta = block.get("meta", {})
+        region_tag = (meta.get("region_tag") or "").lower()
+        if region_tag in {"", "paragraph", "text", None}:
+            continue
+        reasons = block.setdefault("reason", [])
+        reasons.append(f"Detector:{region_tag}")
+        meta["detector_forced"] = True
+        score = float(meta.get("region_score")) if meta.get("region_score") is not None else 0.8
+        block.setdefault("confidence", max(0.7, score))
+        if region_tag == "caption":
+            block["kind"] = "aux"
+            block["aux_type"] = "caption"
+            block["flow"] = "aux"
+            forced_captions.append(idx)
+        elif region_tag == "sidebar":
+            block["kind"] = "aux"
+            subtype = "callout"
+            if meta.get("left_pct", 0.0) <= left_margin or meta.get("right_pct", 1.0) >= right_margin:
+                subtype = "sidenote"
+            block["aux_type"] = subtype
+            block["flow"] = "aux"
+        elif region_tag == "title":
+            block["kind"] = "aux"
+            block["aux_type"] = "header"
+            block["flow"] = "aux"
+            if meta.get("top_pct", 1.0) <= section_top:
+                meta["heading_candidate"] = True
+        elif region_tag == "figure":
+            block["kind"] = "aux"
+            block["aux_type"] = "figure"
+            block["flow"] = "aux"
+            block["block_type"] = "figure"
+            figure_records[idx] = block
+        elif region_tag == "table":
+            block["kind"] = "aux"
+            block["aux_type"] = "table"
+            block["flow"] = "aux"
+            block["block_type"] = "table"
+            figure_records[idx] = block
+        elif region_tag == "header":
+            block["kind"] = "aux"
+            block["aux_type"] = "header"
+            block["flow"] = "aux"
+        elif region_tag == "footer":
+            block["kind"] = "aux"
+            block["aux_type"] = "footer"
+            block["flow"] = "aux"
+        elif region_tag == "page_num":
+            block["kind"] = "aux"
+            block["aux_type"] = "page_number"
+            block["flow"] = "aux"
+        elif region_tag == "list":
+            block["kind"] = "aux"
+            block["aux_type"] = "other"
+            block["flow"] = "aux"
+    return forced_captions
+
+
+def _group_sidebar_blocks(blocks: List[Dict[str, Any]], cfg: Dict[str, Any]) -> None:
+    groups: Dict[str, List[int]] = {}
+    for idx, block in enumerate(blocks):
+        meta = block.get("meta", {})
+        if (meta.get("region_tag") or "").lower() != "sidebar":
+            continue
+        region_id = meta.get("region_id")
+        if not region_id:
+            continue
+        groups.setdefault(str(region_id), []).append(idx)
+
+    if not groups:
+        return
+
+    for group_indices in groups.values():
+        if len(group_indices) <= 1:
+            continue
+        leader_idx = group_indices[0]
+        leader = blocks[leader_idx]
+        meta = leader.get("meta", {})
+        region_bbox = meta.get("region_bbox")
+        if isinstance(region_bbox, (list, tuple)) and len(region_bbox) == 4:
+            x0, y0, x1, y1 = map(float, region_bbox)
+        else:
+            x0, y0, x1, y1 = leader["bbox"]
+        texts: List[str] = []
+        for idx in group_indices:
+            member = blocks[idx]
+            text = member.get("text") or ""
+            if text:
+                texts.append(text)
+            if idx != leader_idx:
+                member["skip"] = True
+        leader["text"] = "\n".join(texts)
+        leader["bbox"] = (x0, y0, x1, y1)
+        page_width = meta.get("page_width", 1.0) or 1.0
+        page_height = meta.get("page_height", 1.0) or 1.0
+        meta["width"] = max(0.0, x1 - x0)
+        meta["height"] = max(0.0, y1 - y0)
+        meta["width_pct"] = meta["width"] / page_width if page_width else 0.0
+        meta["height_pct"] = meta["height"] / page_height if page_height else 0.0
+        meta["left_pct"] = x0 / page_width if page_width else 0.0
+        meta["right_pct"] = x1 / page_width if page_width else 0.0
+        meta["top_pct"] = y0 / page_height if page_height else 0.0
+        meta["bottom_pct"] = y1 / page_height if page_height else 0.0
+        meta["region_bbox"] = (x0, y0, x1, y1)
+
+    updated = [blk for blk in blocks if not blk.get("skip")]
+    if len(updated) != len(blocks):
+        blocks[:] = updated
+        for new_idx, block in enumerate(blocks):
+            block["index"] = new_idx
 def _is_in_active_section(state: Any) -> bool:
     if hasattr(state, "section_state"):
         return getattr(state, "section_state") != "OUT_OF_SECTION"
@@ -165,6 +294,9 @@ def _block_record(
         "page_width": page_width,
         "page_height": page_height,
         "region_tag": block.attrs.get("region_tag"),
+        "region_id": block.attrs.get("region_id"),
+        "region_score": block.attrs.get("region_score"),
+        "region_bbox": block.attrs.get("region_bbox"),
     }
     record = {
         "page": page.page_number,
@@ -237,6 +369,8 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
         figure_records[-(offset + 1)] = fig
     caption_indices: List[int] = []
 
+    caption_indices.extend(_apply_detector_overrides(blocks, page_ctx, cfg, figure_records))
+
     for idx, block in enumerate(blocks):
         meta = block["meta"]
         region_tag = meta.get("region_tag")
@@ -247,6 +381,13 @@ def prepass_aux(blocks: List[Dict[str, Any]], page_ctx: Dict[str, Any], cfg: Dic
         bottom_pct = float(meta.get("bottom_pct", 0.0))
         width_pct = float(meta.get("width_pct", 0.0))
         reasons = block.setdefault("reason", [])
+
+        if meta.get("detector_forced") and block.get("kind") == "aux":
+            if block.get("aux_type") == "caption" and idx not in caption_indices:
+                caption_indices.append(idx)
+            if block.get("aux_type") in {"figure", "table"}:
+                figure_records[idx] = block
+            continue
 
         if block["block_type"] in {"figure", "image"}:
             block["kind"] = "aux"
@@ -1178,6 +1319,7 @@ def classify_blocks(doc: DocumentLayout, config: Optional[Dict[str, object]] = N
             if block.block_type in {"figure", "image", "table"}:
                 figures_for_next.append({"bbox": record["bbox"], "index": record["index"], "page": page.page_number})
 
+        _group_sidebar_blocks(block_records, cfg)
         prepass_aux(block_records, page_ctx, cfg)
         stitch_paragraphs(block_records, cfg)
         stats = estimate_body_stats(block_records, page_ctx)
@@ -1186,6 +1328,21 @@ def classify_blocks(doc: DocumentLayout, config: Optional[Dict[str, object]] = N
         apply_caption_ring_hotfix(block_records, figures_on_page, stats, cfg)
         apply_callout_hotfix(block_records, stats, cfg)
         _enrich_block_meta(block_records, stats)
+
+        for det in page.meta.get("detector_regions", []) if isinstance(page.meta, dict) else []:
+            cls = str(det.get("cls", "")).lower()
+            if cls not in {"figure", "table"}:
+                continue
+            bbox = det.get("bbox_pdf") or det.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            figures_for_next.append(
+                {
+                    "bbox": tuple(float(v) for v in bbox),
+                    "index": -(1000 + len(figures_for_next)),
+                    "page": page.page_number,
+                }
+            )
 
         for record in block_records:
             record.setdefault("reason", [])

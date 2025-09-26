@@ -20,6 +20,19 @@ thresholds:
   sidenote_font_z_max: -0.40
   table_ruling_density: 0.60
   quarantined_aux_conf_min: 0.65
+detector:
+  engine: onnxruntime
+  model_path: models/doclayout_yolov8n.onnx
+  score_thresh: 0.30
+  nms_iou: 0.50
+  target_classes: [paragraph, title, caption, figure, table, list, sidebar, header, footer, page_num]
+  dpi: 180
+anchoring:
+  caption_ring_inner_px: 24
+  caption_ring_outer_px: 120
+  horiz_overlap_min: 0.30
+sidebar:
+  iou_merge_thresh: 0.30
 bands:
   margin_x_pct: [0.00, 0.09, 0.91, 1.00]
   header_y_pct: 0.12
@@ -27,6 +40,8 @@ bands:
   header_band_h_pct: 0.12
   footer_band_h_pct: 0.12
   body_band_h_pct: 0.76
+sectioning:
+  implicit_start_top_pct: 0.25
 repetition:
   min_pages: 3
   max_vertical_jitter_px: 20
@@ -94,6 +109,8 @@ page_turn:
     caption: 0.15
     sidenote: 0.20
     callout: 0.25
+fallback:
+  enable_post_pass_repairer: true
 source_label:
   strategy: free_aux
   distance_px_max: 120
