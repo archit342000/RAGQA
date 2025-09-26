@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, Iterable, List, Sequence
+
+try:  # pragma: no cover - optional dependency for integration tests
+    import fitz  # type: ignore
+except Exception:  # pragma: no cover - PyMuPDF might be unavailable in CI
+    fitz = None
 
 from .anchoring import anchor_captions
 from .fsm import FlowState, fsm_stitch_and_buffer
@@ -23,12 +29,71 @@ class PageInput:
     meta: Dict[str, object] = field(default_factory=dict)
 
 
+def _iter_pdf_pages(pdf_path: Path, dpi: int) -> Iterable[PageInput]:  # pragma: no cover - heavy I/O
+    if fitz is None:
+        raise RuntimeError(
+            "PyMuPDF is required to load PDF files; install the 'pymupdf' package"
+        )
+
+    doc = fitz.open(pdf_path)
+    for index, page in enumerate(doc):
+        text_dict = page.get_text("dict")
+        spans: List[Span] = []
+        for block in text_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "")
+                    if not text:
+                        continue
+                    bbox = tuple(float(v) for v in span.get("bbox", (0, 0, 0, 0)))
+                    flags = int(span.get("flags", 0))
+                    spans.append(
+                        Span(
+                            text=text,
+                            bbox=bbox,  # coordinates remain in PDF space
+                            font_size=float(span.get("size", 0.0)),
+                            font_name=span.get("font", ""),
+                            bold=bool(flags & 2),
+                            italic=bool(flags & 1),
+                        )
+                    )
+
+        page_id = f"p_{index + 1:04d}"
+        meta = {
+            "dpi": dpi,
+            "rotation": getattr(page, "rotation", 0),
+            "number": index,
+        }
+        yield PageInput(
+            page_id=page_id,
+            number=index + 1,
+            width=float(page.rect.width),
+            height=float(page.rect.height),
+            spans=spans,
+            meta=meta,
+        )
+
+
 def load_pages(source, dpi: int) -> List[PageInput]:
-    """Load pages from a synthetic list or raise for real PDFs (out of scope)."""
+    """Normalise page input for the downstream pipeline."""
 
     if isinstance(source, list):
         return list(source)
-    raise RuntimeError("PDF loading not implemented in the reference tests")
+
+    if isinstance(source, Sequence) and all(isinstance(p, PageInput) for p in source):
+        return list(source)
+
+    if isinstance(source, (str, Path)):
+        pdf_path = Path(source)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        return list(_iter_pdf_pages(pdf_path, dpi))
+
+    raise TypeError(
+        "Unsupported source type for parse_document; expected list of PageInput or path-like object"
+    )
 
 
 def parse_document(source, cfg: Dict[str, object]) -> Dict[str, object]:
