@@ -1,68 +1,54 @@
-"""Export stitched blocks into DocBlock JSON structures."""
+"""Exporter for the extended DocBlock schema."""
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
-from .stitcher import StitchedBlock
-from .utils import DocBlock, load_config, normalize_bbox
+from typing import Dict, List
 
 
-def _wrap_aux_text(kind: str, text: str) -> str:
+def _wrap_aux_text(block_type: str, text: str) -> str:
     cleaned = (text or "").strip()
-    if kind == "aux":
+    if block_type == "aux":
         if cleaned.startswith("<aux>") and cleaned.endswith("</aux>"):
             return cleaned
         return f"<aux>{cleaned}</aux>"
     return cleaned
 
 
-def export_docblocks(
-    stitched: List[StitchedBlock],
-    config: Optional[Dict[str, object]] = None,
-) -> List[Dict[str, object]]:
-    cfg = config or load_config()
-    sorted_blocks = sorted(stitched, key=lambda b: (b.page, b.bbox[1]))
-    docblocks: List[Dict[str, object]] = []
-    source_map: Dict[tuple[int, int], str] = {}
-    for idx, block in enumerate(sorted_blocks):
-        block_id = f"b_p{block.page:02}_{idx:04}"
-        for source in block.sources:
-            source_map[source] = block_id
-        anchor_id = None
-        if block.anchor_source:
-            anchor_id = source_map.get(block.anchor_source)
-        if anchor_id is None and block.kind == "aux":
-            anchor_id = _last_main_id(docblocks)
-        width = float(block.meta.get("page_width", 1.0) or 1.0)
-        height = float(block.meta.get("page_height", 1.0) or 1.0)
-        normalized = normalize_bbox(block.bbox, width, height)
-        wrapped_text = _wrap_aux_text(block.kind, block.text)
-        docblock = DocBlock(
-            id=block_id,
-            page=block.page,
-            kind=block.kind,
-            aux_type=block.aux_type,
-            subtype=block.subtype,
-            text=wrapped_text,
-            bbox=normalized,
-            region_tag=block.region_tag,
-            flow=block.flow,
-            ms=block.ms,
-            hs=block.hs,
-            reason=block.reason,
-            anchor_to=anchor_id,
-            attached_across_pages=block.attached_across_pages,
-            confidence=block.confidence,
-            quarantined=block.quarantined,
-            aux_shadow=block.aux_shadow,
-            meta={k: v for k, v in block.meta.items() if k != "sources"},
+def export_doc(doc: Dict[str, object]) -> Dict[str, object]:
+    """Normalise block payloads and wrap aux text."""
+
+    pages_out: List[Dict[str, object]] = []
+    for page in doc.get("pages", []):
+        page_id = page.get("page_id", "p_0001")
+        blocks_out: List[Dict[str, object]] = []
+        for idx, block in enumerate(page.get("blocks", [])):
+            block_id = block.get("id") or f"{page_id}_blk_{idx:03d}"
+            text = _wrap_aux_text(block.get("type", "main"), block.get("text", ""))
+            blocks_out.append(
+                {
+                    "id": block_id,
+                    "type": block.get("type", "main"),
+                    "subtype": block.get("subtype"),
+                    "bbox": [float(v) for v in block.get("bbox", [0, 0, 0, 0])],
+                    "text": text,
+                    "links": block.get("links", []),
+                    "page_references": block.get("page_references", []),
+                    "ro_index": block.get("ro_index", 0),
+                    "flow_id": block.get("flow_id"),
+                    "region_tag": block.get("region_tag"),
+                    "confidence": block.get("confidence", 0.0),
+                    "aux_shadow": block.get("aux_shadow", False),
+                    "inline_caption": block.get("inline_caption", False),
+                    "quarantined": block.get("quarantined", False),
+                    "meta": block.get("meta", {}),
+                    "reason": block.get("reason", []),
+                }
+            )
+        pages_out.append(
+            {
+                "page_id": page_id,
+                "blocks": blocks_out,
+                "aux_queue": page.get("aux_queue", []),
+                "split_events": page.get("split_events", []),
+            }
         )
-        docblocks.append(docblock.to_dict())
-    return docblocks
-
-
-def _last_main_id(docblocks: List[Dict[str, object]]) -> Optional[str]:
-    for block in reversed(docblocks):
-        if block.get("kind") == "main":
-            return block.get("id")
-    return None
+    return {"pages": pages_out}

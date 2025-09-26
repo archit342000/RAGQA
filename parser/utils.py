@@ -24,32 +24,40 @@ BBox = Tuple[float, float, float, float]
 
 
 DEFAULT_CONFIG: Dict[str, object] = {
-    "detector": {
-        "engine": "onnxruntime",
-        "model_path": "models/doclayout_yolov8l.onnx",
+    "layout_model": {
+        "backbone": "DocLay512-DiT|YOLOv8-Doc",
+        "model_path": "models/layout.onnx",
+        "provider": "gpu_if_available_else_cpu",
+        "dpi": 360,
         "score_thresh": 0.35,
         "nms_iou": 0.6,
-        "target_classes": [
-            "paragraph",
-            "title",
-            "caption",
-            "figure",
-            "table",
-            "list",
-            "sidebar",
-            "header",
-            "footer",
-            "page_num",
-        ],
-        "dpi": 180,
     },
-    "anchoring": {
-        "caption_ring_inner_px": 24,
-        "caption_ring_outer_px": 120,
-        "horiz_overlap_min": 0.30,
+    "ocr": {
+        "engine": "paddleocr",
+        "enable": True,
+        "use_for_regions_without_pdf_text": True,
+        "lang": "en",
+        "orientation": True,
     },
-    "sidebar": {
-        "iou_merge_thresh": 0.30,
+    "grouping": {
+        "baseline_slope_tol_deg": 2.0,
+        "line_y_gap_max_lh": 1.4,
+        "left_margin_merge_tol_px": 6,
+        "xcut_whitespace_valley_min_px": 12,
+    },
+    "reading_order": {
+        "xycut_enable": True,
+        "gnn_link_enable": True,
+        "col_consistency_weight": 0.6,
+        "vertical_adj_weight": 0.3,
+        "left_align_weight": 0.1,
+    },
+    "bands": {
+        "header_pct": 0.10,
+        "footer_pct": 0.10,
+    },
+    "margin_bands": {
+        "outer_x_pct": [0.00, 0.09, 0.91, 1.00],
     },
     "thresholds": {
         "tau_main": 0.60,
@@ -63,113 +71,35 @@ DEFAULT_CONFIG: Dict[str, object] = {
         "sidenote_font_z_max": -0.40,
         "table_ruling_density": 0.60,
     },
-    "bands": {
-        "margin_x_pct": [0.00, 0.09, 0.91, 1.00],
-        "header_y_pct": 0.12,
-        "footer_y_pct": 0.12,
-    },
-    "sectioning": {
-        "implicit_start_top_pct": 0.25,
-    },
-    "implicit_section": {
-        "enable": True,
-        "score_threshold": 0.75,
-        "top_region_pct": 0.25,
-        "min_opening_chars": 160,
-        "whitespace_halo_min_lh": 1.2,
-        "dropcap_detect": True,
-        "first_line_indent_delta_px": 8,
-        "chapter_follow_window_pages": 1,
-    },
-    "buffering": {
-        "max_aux_per_anchor_per_type": 2,
-        "nextpage_top_window_pct": {
-            "caption": 0.15,
-            "sidenote": 0.20,
-            "callout": 0.25,
-        },
-    },
-    "post_pass": {
-        "enable": True,
-        "order": [
-            "stitch_first",
-            "peel_captions",
-            "shrink_caption_bounds",
-            "demote_headers",
-            "group_activity",
-            "dedup_quarantine",
-        ],
-    },
-    "stitching": {
-        "split_confidence_threshold": 0.65,
-        "split_confidence": 0.65,
-        "top_lookahead_pct": 0.30,
-        "ttl_pages": {"aux": 1, "pagebreak": 2},
-    },
-    "fallback": {"enable_post_pass_repairer": True},
-    "buffers": {"max_aux_per_anchor_per_type": 2},
-    "page_turn": {
-        "nextpage_top_window_pct": {
-            "caption": 0.15,
-            "sidenote": 0.20,
-            "callout": 0.25,
-        },
-    },
-    "escalation": {
-        "bootstrap_pages": 2,
-        "per_section_bootstrap": 1,
-        "lcs_tau_page": 0.38,
-        "lcs_tau_doc": 0.34,
-        "soft_signal_quorum": 2,
-        "strong_signal_quorum": 1,
-        "force_escalate_if_main_pct_below": 0.60,
-        "use_pp_structure": True,
-    },
-    "ocr": {
-        "enable_on_low_yield": True,
-        "enable_on_font_anomaly": True,
-        "dpi": 250,
-    },
     "caption": {
+        "peel_height_multiplier": 1.25,
         "ring_inner_px": 24,
         "ring_outer_px": 120,
         "horiz_overlap_min": 0.30,
-        "near_image_lh_multiplier": 1.5,
-        "extended_merge_max_chars": 220,
     },
-    "caption_ring": {"R_in_px": 32, "R_out_px": 120},
-    "caption_heuristics": {"max_chars": 180, "allow_trailing_colon": False},
-    "activity": {"cue_regex": "^(Activity|Let’s|Discuss|Recall|Think|Try)\\b"},
-    "callout": {
-        "min_inset_px": 12,
-        "max_width_ratio_vs_body": 0.85,
-        "min_cues_required": 2,
-        "min_leading_ratio_delta": 0.10,
-        "iou_merge_thresh": 0.3,
-        "cues": ["Activity", "Discuss", "Think", "Did you know", "Recall"],
+    "sidebar": {
+        "max_width_ratio": 0.35,
+        "require_cue": True,
+        "iou_region_min": 0.30,
     },
-    "header_footer": {
-        "heading_size_jump_min_ratio": 1.20,
-        "heading_short_word_max": 8,
-        "require_running_pattern_for_footer": True,
+    "headers_footers": {
         "repetition_pages": 3,
         "vertical_jitter_px": 20,
         "regex": ["OUR PASTS\\s+\\d+", "Reprint\\s+\\d{4}-\\d{2,4}"],
     },
-    "sidenote": {"max_width_ratio": 0.50, "font_z_max": -0.40},
-    "continuation_guard": {
-        "indent_tolerance_px": 6,
-        "continuation_lowercase_start": True,
+    "stitching": {
+        "split_confidence": 0.65,
+        "open_paragraph_indent_tol_px": 6,
+        "top_lookahead_pct": 0.30,
     },
-    "footer_bias": {"ambiguity_delta": 0.10},
-    "section_detection": {
-        "gap_leading_min_ratio": 1.5,
-        "allow_dropcap_or_indent_reset_at_top": True,
-        "bold_leadin_colon_allows_section": True,
+    "bias": {
+        "bias_to_main": True,
+        "aux_demote_conf_min": 0.60,
     },
-    "composite_score": {"delta_borderline": 0.10},
-    "bias": {"aux_conf_min": 0.6},
-    "source_label": {"strategy": "free_aux", "distance_px_max": 120},
+    "diagnostics": {
+        "save_overlays": False,
+        "leak_budget_caption_in_main_pct": 0.0,
+    },
 }
 
 
