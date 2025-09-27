@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProgressState",
+  "type": "object",
+  "required": [
+    "doc_id",
+    "input_pdf",
+    "mode",
+    "pages_total",
+    "started_at",
+    "completed",
+    "next_chunk_index",
+    "pending_paragraphs",
+    "counters",
+    "pages"
+  ],
+  "properties": {
+    "doc_id": {"type": "string"},
+    "input_pdf": {"type": "string"},
+    "mode": {"enum": ["fast", "thorough"]},
+    "pages_total": {"type": "integer", "minimum": 0},
+    "started_at": {"type": "string"},
+    "completed_at": {"type": ["string", "null"]},
+    "completed": {"type": "boolean"},
+    "next_chunk_index": {"type": "integer", "minimum": 0},
+    "last_chunk_id": {"type": ["string", "null"]},
+    "pending_paragraphs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "page_index", "line_start", "line_end", "tokens"],
+        "properties": {
+          "text": {"type": "string"},
+          "page_index": {"type": "integer", "minimum": 0},
+          "line_start": {"type": "integer", "minimum": 0},
+          "line_end": {"type": "integer", "minimum": 0},
+          "tokens": {"type": "integer", "minimum": 0},
+          "heading": {"type": "boolean"},
+          "list_item": {"type": "boolean"}
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "properties": {
+        "lines_total": {"type": "integer", "minimum": 0},
+        "tables_emitted": {"type": "integer", "minimum": 0},
+        "captions_extracted": {"type": "integer", "minimum": 0},
+        "skipped_tables": {"type": "integer", "minimum": 0},
+        "noise_dropped": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["index", "status", "ocr_mode", "chunks_emitted", "tables_emitted", "notes"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0},
+          "status": {"enum": ["pending", "processing", "done"]},
+          "ocr_mode": {"enum": ["none", "partial", "full"]},
+          "chunks_emitted": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "tables_emitted": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "notes": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,85 +1,87 @@
-"""Configuration helpers for the PDF ingestion pipeline."""
+"""Configuration helpers for the deterministic PDF ingestion pipeline."""
+
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict
 
-DEFAULTS_VERBATIM = """\
-glyph_min_for_text_page=200
-fast_budget_s=20
-thorough_budget_s=40
-max_pages=500
-table_digit_ratio>=0.4
-chunk_token_target=350..600
-overlap=0.1..0.15
-noise_drop_ratio>0.3
-"""
+
+_DEFAULTS: Dict[str, str] = {
+    "glyph_min_for_text_page": "200",
+    "table_digit_ratio": ">=0.4",
+    "table_score_conf": ">=0.6",
+    "bad_dpi": "<150",
+    "chunk_tokens": "350..600",
+    "overlap": "0.1..0.15",
+    "ocr_retry": "1",
+    "rasterizations_per_page": "<=2",
+    "junk_char_ratio": ">0.3",
+}
 
 
 @dataclass
-class IngestConfig:
+class Config:
     """Runtime configuration for parsing and chunking."""
 
-    glyph_min_for_text_page: int = 200
-    fast_budget_s: float = 20.0
-    thorough_budget_s: float = 40.0
-    max_pages: int = 500
-    table_digit_ratio: float = 0.4
-    chunk_target_min: int = 350
-    chunk_target_max: int = 600
-    overlap_min: float = 0.10
-    overlap_max: float = 0.15
-    noise_drop_ratio: float = 0.30
+    glyph_min_for_text_page: int = int(_DEFAULTS["glyph_min_for_text_page"])
+    table_digit_ratio: float = float(_DEFAULTS["table_digit_ratio"][2:])
+    table_score_conf: float = float(_DEFAULTS["table_score_conf"][2:])
+    bad_dpi: int = int(_DEFAULTS["bad_dpi"][1:])
+    chunk_tokens_min: int = int(_DEFAULTS["chunk_tokens"].split("..", 1)[0])
+    chunk_tokens_max: int = int(_DEFAULTS["chunk_tokens"].split("..", 1)[1])
+    overlap_min: float = float(_DEFAULTS["overlap"].split("..", 1)[0])
+    overlap_max: float = float(_DEFAULTS["overlap"].split("..", 1)[1])
+    ocr_retry: int = int(_DEFAULTS["ocr_retry"])
+    rasterizations_per_page: int = int(_DEFAULTS["rasterizations_per_page"].split("<=", 1)[1])
+    junk_char_ratio: float = float(_DEFAULTS["junk_char_ratio"][1:])
     bbox_mode: str = "line"
-    persist_line_bboxes: bool = True
     mode: str = "fast"
+    max_pages: int = 500
+    progress_flush_interval: int = 1
 
-    @property
-    def overlap_avg(self) -> float:
-        return (self.overlap_min + self.overlap_max) / 2.0
+    @classmethod
+    def from_sources(
+        cls,
+        *,
+        json_path: str | None = None,
+        overrides: Dict[str, Any] | None = None,
+    ) -> "Config":
+        """Create a configuration, merging defaults with optional payloads."""
 
-    @property
-    def chunk_target_range(self) -> tuple[int, int]:
-        return (self.chunk_target_min, self.chunk_target_max)
+        base: Dict[str, Any] = asdict(cls())
+        payload: Dict[str, Any] = {}
+        if json_path:
+            data = json.loads(Path(json_path).read_text())
+            if not isinstance(data, dict):
+                raise ValueError("Config JSON must be an object")
+            payload.update(data)
+        if overrides:
+            payload.update(overrides)
+        for key, value in payload.items():
+            if key not in base:
+                raise KeyError(f"Unknown config key: {key}")
+            base[key] = value
+        config = cls(**base)  # type: ignore[arg-type]
+        config._validate()
+        return config
 
-    def budget_for_mode(self, mode: str | None = None) -> float:
-        selected = (mode or self.mode).lower()
-        if selected == "thorough":
-            return self.thorough_budget_s
-        if selected == "auto":
-            return self.thorough_budget_s
-        return self.fast_budget_s
+    def _validate(self) -> None:
+        if self.chunk_tokens_min <= 0 or self.chunk_tokens_max <= 0:
+            raise ValueError("chunk token bounds must be positive")
+        if self.chunk_tokens_min >= self.chunk_tokens_max:
+            raise ValueError("chunk_tokens_min must be < chunk_tokens_max")
+        if not (0 < self.overlap_min <= self.overlap_max < 1):
+            raise ValueError("overlap range must be between 0 and 1")
+        if self.bbox_mode not in {"line", "band"}:
+            raise ValueError("bbox_mode must be 'line' or 'band'")
+        if self.mode not in {"fast", "thorough"}:
+            raise ValueError("mode must be fast or thorough")
 
-    def to_serializable(self) -> Dict[str, Any]:
-        data = asdict(self)
-        data.update(
-            {
-                "DEFAULTS_VERBATIM": DEFAULTS_VERBATIM.strip().splitlines(),
-                "chunk_token_target": f"{self.chunk_target_min}..{self.chunk_target_max}",
-                "overlap": f"{self.overlap_min:.2f}..{self.overlap_max:.2f}",
-                "noise_drop_ratio": f">{self.noise_drop_ratio:.2f}",
-                "table_digit_ratio": f">={self.table_digit_ratio:.2f}",
-            }
-        )
-        return data
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
+    def write(self, path: Path) -> None:
+        path.write_text(json.dumps(self.to_dict(), indent=2))
 
-def _read_json(path: Path | None) -> Dict[str, Any]:
-    if not path:
-        return {}
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def load_config(config_path: str | None = None) -> IngestConfig:
-    """Load an ingest configuration from disk, merging with defaults."""
-
-    data = _read_json(Path(config_path) if config_path else None)
-    config = IngestConfig()
-    for key, value in data.items():
-        if not hasattr(config, key):
-            continue
-        setattr(config, key, value)
-    return config

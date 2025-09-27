@@ -1,243 +1,298 @@
-"""Shared ingestion helpers used by the CLI and the Gradio UI."""
+"""Deterministic streaming pipeline for PDF parsing and chunking."""
+
 from __future__ import annotations
 
+import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
+from .chunker import ChunkBuilder, Chunk, paragraphs_from_lines, estimate_tokens
 from .column_order import reorder_page_lines
-from .config import IngestConfig
-from .ocr import ensure_ocr_layer
-from .outputs import hash_file, write_json, write_jsonl
-from .pdf_io import Line, compute_glyph_counts, extract_pages
-from .chunker import build_chunks, build_paragraphs, estimate_tokens
+from .config import Config
+from .logging import EventLogger
+from .ocr import OCRDecision, classify_pages, pytesseract_page_image, run_ocrmypdf
+from .outputs import append_jsonl, hash_file, write_json
+from .pdf_io import Line, collect_page_lines, load_document_payload, open_document
+from .progress import ProgressTracker
 from .sidecars import split_sidecars
-from .table_detect import TableArtifact, detect_tables
+from .table_detect import detect_tables_for_page, write_table_csv
 
 
 @dataclass
-class Budget:
-    """Simple stopwatch tracking the configured time allowance."""
-
-    limit: float
-    start: float = field(default_factory=time.perf_counter)
-    exhausted_reason: str | None = None
-
-    def check(self, reason: str) -> bool:
-        if self.elapsed > self.limit:
-            if not self.exhausted_reason:
-                self.exhausted_reason = reason
-            return True
-        return False
-
-    @property
-    def elapsed(self) -> float:
-        return time.perf_counter() - self.start
-
-    @property
-    def remaining(self) -> float:
-        return max(0.0, self.limit - self.elapsed)
-
-
-@dataclass
-class PagePayload:
-    index: int
-    glyphs: int
-    text: str
-
-
-@dataclass
-class IngestResult:
+class PipelineResult:
     doc_id: str
     doc_name: str
-    mode: str
-    pages: List[PagePayload]
-    chunks: List[Dict[str, object]]
-    captions: List[Dict[str, object]]
-    footnotes: List[Dict[str, object]]
-    tables: List[TableArtifact]
-    stats: Dict[str, object]
-    config_payload: Dict[str, object]
-    events: List[Dict[str, object]]
-    provenance_hash: str
-    working_pdf: Path
-    skipped_tables: int
+    out_dir: Path
+    stats: Dict[str, Any]
+    config: Dict[str, Any]
+    progress: Dict[str, Any]
+    chunks: List[Dict[str, Any]]
 
 
-def _log(events: List[Dict[str, object]], event: str, **payload: object) -> None:
-    record = {"event": event, **payload}
-    events.append(record)
+def _chunk_record(doc_id: str, chunk: Chunk, provenance_hash: str) -> Dict[str, object]:
+    return {
+        "doc_id": doc_id,
+        "chunk_id": chunk.chunk_id,
+        "type": chunk.type,
+        "text": chunk.text,
+        "tokens_est": chunk.tokens,
+        "page_spans": chunk.page_spans,
+        "section_hints": [],
+        "neighbors": chunk.neighbors,
+        "table_csv": chunk.table_csv,
+        "evidence_offsets": chunk.evidence_offsets,
+        "provenance": {"hash": provenance_hash, "byte_range": None},
+    }
 
 
-def run_pipeline(
-    pdf_path: Path,
-    out_dir: Path,
-    config: IngestConfig,
-    *,
-    mode: str = "fast",
-) -> IngestResult:
-    """Execute parsing, optional OCR, chunking, and table export."""
+def _sidecar_record(doc_id: str, *, chunk_id: str, chunk_type: str, text: str, page: int, line_index: int, provenance_hash: str) -> Dict[str, object]:
+    return {
+        "doc_id": doc_id,
+        "chunk_id": chunk_id,
+        "type": chunk_type,
+        "text": text,
+        "tokens_est": estimate_tokens(text),
+        "page_spans": [[page + 1, [line_index + 1, line_index + 1]]],
+        "section_hints": [],
+        "neighbors": {"prev": None, "next": None},
+        "table_csv": None,
+        "evidence_offsets": [],
+        "provenance": {"hash": provenance_hash, "byte_range": None},
+    }
 
+
+def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResult:
+    start = time.perf_counter()
     pdf_path = pdf_path.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    events: List[Dict[str, object]] = []
+    provenance_hash = hash_file(pdf_path)
 
-    doc_id = pdf_path.stem
-    doc_name = pdf_path.name
+    with open_document(pdf_path) as doc:
+        total_pages = min(len(doc), config.max_pages)
 
-    resolved_mode = mode.lower()
-    if resolved_mode not in {"fast", "thorough", "auto"}:
-        raise ValueError(f"Unsupported mode: {mode}")
+    logger = EventLogger(out_dir / "parse.log")
+    logger.emit("parse_started", path=str(pdf_path), mode=config.mode, pages=total_pages)
 
-    try:
-        import fitz  # type: ignore
-    except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
-        raise RuntimeError("PyMuPDF (fitz) is required to parse PDFs") from exc
-
-    with open(pdf_path, "rb") as handle:
-        handle.seek(0, 2)
-        file_size = handle.tell()
-    _log(events, "ingest_start", doc_id=doc_id, mode=resolved_mode, bytes=file_size)
-
-    with fitz.open(pdf_path) as doc:
-        page_count = len(doc)
-
-    if resolved_mode == "auto" and page_count <= 50:
-        resolved_mode = "thorough"
-
-    config.mode = resolved_mode
-    budget = Budget(config.budget_for_mode(resolved_mode))
-
-    glyph_counts = compute_glyph_counts(pdf_path, config.max_pages, budget.check)
-    pages_needing_ocr = [idx for idx, count in enumerate(glyph_counts) if count < config.glyph_min_for_text_page]
-
-    working_pdf = pdf_path
-    if pages_needing_ocr and budget.remaining > 5:
-        temp_dir = out_dir / "_ocr"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        candidate = ensure_ocr_layer(pdf_path, temp_dir, timeout=budget.remaining)
-        if candidate:
-            working_pdf = Path(candidate)
-            _log(events, "ocr_applied", pages=len(pages_needing_ocr))
-
-    pages = extract_pages(working_pdf, config.max_pages, budget.check)
-    body_pages: List[List[Line]] = []
-    page_payloads: List[PagePayload] = []
-    for page in pages:
-        ordered = reorder_page_lines(page.lines)
-        body_pages.append(ordered)
-        page_text = "\n".join(line.text for line in ordered)
-        page_payloads.append(PagePayload(index=page.index, glyphs=page.glyphs, text=page_text))
-
-    body_pages, captions_lines, footnote_lines = split_sidecars(body_pages)
-    tables, skipped_tables = detect_tables(body_pages, out_dir, confidence_threshold=config.table_digit_ratio)
-    for artifact in tables:
-        for line in artifact.lines:
-            try:
-                body_pages[artifact.page_index].remove(line)
-            except ValueError:
-                continue
-
-    paragraphs = build_paragraphs(body_pages)
-    provenance_hash = hash_file(working_pdf)
-    body_chunks, noise_ratio = build_chunks(doc_id, paragraphs, config, provenance_hash=provenance_hash)
-
-    def _make_sidecar_chunk(line: Line, chunk_type: str, suffix: str) -> Dict[str, object]:
-        page_span = [line.page_index + 1, [line.line_index + 1, line.line_index + 1]]
-        return {
-            "doc_id": doc_id,
-            "chunk_id": suffix,
-            "type": chunk_type,
-            "text": line.text,
-            "tokens_est": estimate_tokens(line.text),
-            "page_spans": [page_span],
-            "section_hints": [],
-            "neighbors": {"prev": None, "next": None},
-            "table_csv": None,
-            "evidence_offsets": [],
-            "provenance": {"hash": provenance_hash, "byte_range": None},
-        }
-
-    chunks_dicts = [chunk.to_dict() for chunk in body_chunks]
-    caption_chunks = [_make_sidecar_chunk(line, "caption", f"C{idx:05d}") for idx, line in enumerate(captions_lines)]
-    footnote_chunks = [_make_sidecar_chunk(line, "footnote", f"F{idx:05d}") for idx, line in enumerate(footnote_lines)]
-
-    table_chunks: List[Dict[str, object]] = []
-    for idx, artifact in enumerate(tables):
-        csv_ref = None
-        if artifact.csv_path:
-            csv_ref = f"{artifact.csv_path}#{artifact.rows},{artifact.cols}"
-        table_chunks.append(
-            {
-                "doc_id": doc_id,
-                "chunk_id": f"T{idx:05d}",
-                "type": "table",
-                "text": "",
-                "tokens_est": 0,
-                "page_spans": [[artifact.page_index + 1, None]],
-                "section_hints": [],
-                "neighbors": {"prev": None, "next": None},
-                "table_csv": csv_ref,
-                "evidence_offsets": [],
-                "provenance": {"hash": provenance_hash, "byte_range": None},
-            }
-        )
-
-    all_chunks = chunks_dicts + caption_chunks + footnote_chunks + table_chunks
-
-    lines_total = sum(len(page.lines) for page in pages)
-    body_token_values = [chunk["tokens_est"] for chunk in chunks_dicts if chunk["type"] == "body"]
-    avg_tokens = float(sum(body_token_values) / max(len(body_token_values), 1)) if body_token_values else 0.0
-
-    stats = {
-        "parse_time_s": round(budget.elapsed, 3),
-        "lines_total": lines_total,
-        "tables_emitted": len([t for t in tables if t.csv_path]),
-        "captions_extracted": len(captions_lines),
-        "chunks_n": len(all_chunks),
-        "avg_tokens": round(avg_tokens, 2),
-        "noise_ratio": round(noise_ratio, 3),
-        "skipped_tables_n": skipped_tables,
-    }
-    if budget.exhausted_reason:
-        stats["budget_exhausted"] = budget.exhausted_reason
-
-    config_payload = config.to_serializable()
-    config_payload["mode"] = resolved_mode
-
-    _log(events, "ingest_complete", doc_id=doc_id, mode=resolved_mode, chunks=len(all_chunks))
-
-    return IngestResult(
-        doc_id=doc_id,
-        doc_name=doc_name,
-        mode=resolved_mode,
-        pages=page_payloads,
-        chunks=all_chunks,
-        captions=caption_chunks,
-        footnotes=footnote_chunks,
-        tables=tables,
-        stats=stats,
-        config_payload=config_payload,
-        events=events,
-        provenance_hash=provenance_hash,
-        working_pdf=working_pdf,
-        skipped_tables=skipped_tables,
+    progress = ProgressTracker(
+        out_dir / "progress.json",
+        doc_id=pdf_path.stem,
+        input_pdf=pdf_path,
+        mode=config.mode,
+        pages_total=total_pages,
     )
 
+    _, signals = load_document_payload(pdf_path, max_pages=total_pages)
+    decisions = classify_pages(signals, config)
 
-def write_artifacts(result: IngestResult, out_dir: Path, *, config_source: Path | None = None) -> None:
-    """Persist chunks, stats, and resolved configuration to disk."""
+    full_pages = [decision.page_index for decision in decisions if decision.mode == "full"]
+    ocr_pdf_path: Optional[Path] = None
+    if full_pages:
+        ocr_pdf_path = out_dir / "_ocr" / "full.pdf"
+        run_ocrmypdf(pdf_path, ocr_pdf_path)
+        logger.emit("ocr_full", pages=full_pages, output=str(ocr_pdf_path))
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    chunks_path = out_dir / "chunks.jsonl"
-    stats_path = out_dir / "stats.json"
-    config_path = out_dir / "config_used.json"
+    original_doc = open_document(pdf_path)
+    ocr_doc = open_document(ocr_pdf_path) if ocr_pdf_path else None
 
-    write_jsonl(chunks_path, result.chunks)
-    payload = dict(result.stats)
-    write_json(stats_path, payload)
-    config_payload = dict(result.config_payload)
-    if config_source is not None:
-        config_payload["config_source"] = str(config_source)
-    write_json(config_path, config_payload)
+    builder = ChunkBuilder(
+        config,
+        next_index=progress.state.next_chunk_index,
+        last_chunk_id=progress.state.last_chunk_id,
+        pending=progress.state.pending_paragraphs,
+    )
+
+    chunk_path = out_dir / "chunks.jsonl"
+    if progress.state.next_chunk_index == 0:
+        chunk_path.unlink(missing_ok=True)
+
+    counters = progress.state.counters.copy()
+    body_token_accumulator: List[int] = []
+    last_record: Optional[Dict[str, object]] = None
+    last_owner: Optional[int] = None
+    pending_chunk_ids: Dict[int, List[str]] = {}
+    written_chunk_ids: Dict[int, List[str]] = {}
+
+    caption_counter = 0
+    footnote_counter = 0
+    table_skips = 0
+    noise_dropped = counters.get("noise_dropped", 0)
+    ocr_retries = {decision.page_index: 0 for decision in decisions}
+
+    for page_index in range(total_pages):
+        if progress.state.pages[page_index].status == "done":
+            continue
+        decision = decisions[page_index] if page_index < len(decisions) else OCRDecision(page_index, "none")
+        progress.page_started(page_index, ocr_mode=decision.mode)
+
+        page_doc = ocr_doc if decision.mode == "full" and ocr_doc is not None else original_doc
+        page = page_doc.load_page(page_index)
+        lines, glyphs = collect_page_lines(page)
+        counters["lines_total"] = counters.get("lines_total", 0) + len(lines)
+
+        notes: List[str] = []
+        if decision.mode == "partial" and ocr_retries[page_index] < config.ocr_retry:
+            additional_lines = pytesseract_page_image(page)
+            if additional_lines:
+                base_index = len(lines)
+                for offset, text in enumerate(additional_lines):
+                    lines.append(Line(page_index=page_index, line_index=base_index + offset, text=text, bbox=None, x_center=None))
+                notes.append("partial_ocr")
+            ocr_retries[page_index] += 1
+        elif decision.mode == "partial" and ocr_retries[page_index] >= config.ocr_retry:
+            notes.append("ocr_retry_exhausted")
+
+        ordered_lines = reorder_page_lines(lines)
+        sidecars = split_sidecars(ordered_lines)
+        counters["captions_extracted"] = counters.get("captions_extracted", 0) + len(sidecars.captions)
+
+        paragraphs, dropped = paragraphs_from_lines(sidecars.body, config=config)
+        noise_dropped += dropped
+
+        page_chunk_ids: List[str] = written_chunk_ids.pop(page_index, []) + list(pending_chunk_ids.get(page_index, []))
+        page_tables: List[str] = []
+
+        for paragraph in paragraphs:
+            emitted = builder.add_paragraph(paragraph)
+            for chunk in emitted:
+                record = _chunk_record(pdf_path.stem, chunk, provenance_hash)
+                if last_record is not None and last_owner is not None:
+                    last_record["neighbors"]["next"] = record["chunk_id"]
+                    append_jsonl(chunk_path, last_record)
+                    body_token_accumulator.append(int(last_record["tokens_est"]))
+                    written_chunk_ids.setdefault(last_owner, []).append(last_record["chunk_id"])
+                    pending_ids = pending_chunk_ids.get(last_owner, [])
+                    if last_record["chunk_id"] in pending_ids:
+                        pending_ids.remove(last_record["chunk_id"])
+                        if not pending_ids:
+                            pending_chunk_ids.pop(last_owner, None)
+                owner = chunk.page_spans[0][0] - 1 if chunk.page_spans else page_index
+                pending_chunk_ids.setdefault(owner, []).append(record["chunk_id"])
+                last_record = record
+                last_owner = owner
+
+        table_candidates = detect_tables_for_page(sidecars.body, page_index=page_index)
+        for candidate in table_candidates:
+            if candidate.confidence >= config.table_score_conf and candidate.digit_ratio >= config.table_digit_ratio:
+                table_path = write_table_csv(candidate, out_dir)
+                chunk_id = f"T{page_index:04d}_{len(page_tables)}"
+                table_chunk = _chunk_record(
+                    pdf_path.stem,
+                    Chunk(
+                        chunk_id=chunk_id,
+                        text=f"Table with {len(candidate.rows)} rows",
+                        page_spans=[[page_index + 1, None]],
+                        tokens=0,
+                        type="table",
+                        table_csv=f"{table_path}#{len(candidate.rows)},{len(candidate.rows[0]) if candidate.rows else 0}",
+                        evidence_offsets=[],
+                        neighbors={"prev": None, "next": None},
+                    ),
+                    provenance_hash,
+                )
+                append_jsonl(chunk_path, table_chunk)
+                page_chunk_ids.append(chunk_id)
+                page_tables.append(table_path)
+                counters["tables_emitted"] = counters.get("tables_emitted", 0) + 1
+            else:
+                table_skips += 1
+
+        for caption in sidecars.captions:
+            chunk_id = f"C{page_index:04d}_{caption_counter}"
+            caption_counter += 1
+            record = _sidecar_record(pdf_path.stem, chunk_id=chunk_id, chunk_type="caption", text=caption.text, page=caption.page_index, line_index=caption.line_index, provenance_hash=provenance_hash)
+            append_jsonl(chunk_path, record)
+            page_chunk_ids.append(chunk_id)
+
+        for footnote in sidecars.footnotes:
+            chunk_id = f"F{page_index:04d}_{footnote_counter}"
+            footnote_counter += 1
+            record = _sidecar_record(pdf_path.stem, chunk_id=chunk_id, chunk_type="footnote", text=footnote.text, page=footnote.page_index, line_index=footnote.line_index, provenance_hash=provenance_hash)
+            append_jsonl(chunk_path, record)
+            page_chunk_ids.append(chunk_id)
+
+        builder_state = builder.state_payload()
+        progress.page_completed(
+            page_index,
+            chunks=page_chunk_ids,
+            tables=page_tables,
+            notes=notes,
+            counters={
+                "lines_total": counters.get("lines_total", 0),
+                "tables_emitted": counters.get("tables_emitted", 0),
+                "captions_extracted": counters.get("captions_extracted", 0),
+                "skipped_tables": table_skips,
+                "noise_dropped": noise_dropped,
+            },
+            pending_paragraphs=builder_state["pending_paragraphs"],
+            last_chunk_id=builder_state["last_chunk_id"],
+        )
+        progress.update_next_chunk_index(builder_state["next_chunk_index"])
+
+    remaining = builder.finalize()
+    for chunk in remaining:
+        record = _chunk_record(pdf_path.stem, chunk, provenance_hash)
+        if last_record is not None and last_owner is not None:
+            last_record["neighbors"]["next"] = record["chunk_id"]
+            append_jsonl(chunk_path, last_record)
+            body_token_accumulator.append(int(last_record["tokens_est"]))
+            written_chunk_ids.setdefault(last_owner, []).append(last_record["chunk_id"])
+            pending_ids = pending_chunk_ids.get(last_owner, [])
+            if last_record["chunk_id"] in pending_ids:
+                pending_ids.remove(last_record["chunk_id"])
+                if not pending_ids:
+                    pending_chunk_ids.pop(last_owner, None)
+        owner = chunk.page_spans[0][0] - 1 if chunk.page_spans else (last_owner if last_owner is not None else 0)
+        pending_chunk_ids.setdefault(owner, []).append(record["chunk_id"])
+        last_record = record
+        last_owner = owner
+
+    if last_record:
+        append_jsonl(chunk_path, last_record)
+        body_token_accumulator.append(int(last_record["tokens_est"]))
+        if last_owner is not None:
+            written_chunk_ids.setdefault(last_owner, []).append(last_record["chunk_id"])
+            pending_ids = pending_chunk_ids.get(last_owner, [])
+            if last_record["chunk_id"] in pending_ids:
+                pending_ids.remove(last_record["chunk_id"])
+                if not pending_ids:
+                    pending_chunk_ids.pop(last_owner, None)
+
+    elapsed = time.perf_counter() - start
+    body_chunks = len(body_token_accumulator)
+    avg_tokens = sum(body_token_accumulator) / body_chunks if body_chunks else 0
+    stats = {
+        "parse_time_s": round(elapsed, 3),
+        "lines_total": counters.get("lines_total", 0),
+        "tables_emitted": counters.get("tables_emitted", 0),
+        "captions_extracted": counters.get("captions_extracted", 0),
+        "chunks_n": progress.state.next_chunk_index
+        + caption_counter
+        + footnote_counter
+        + counters.get("tables_emitted", 0),
+        "avg_tokens": round(avg_tokens, 2) if avg_tokens else 0,
+        "noise_ratio": round(noise_dropped / max(counters.get("lines_total", 1), 1), 4),
+        "skipped_tables_n": table_skips,
+    }
+    write_json(out_dir / "stats.json", stats)
+    config.write(out_dir / "config_used.json")
+    progress.mark_completed()
+    logger.emit("parse_completed", duration_s=stats["parse_time_s"], chunks=stats["chunks_n"])
+
+    chunks: List[Dict[str, Any]] = []
+    with chunk_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                chunks.append(json.loads(line))
+
+    return PipelineResult(
+        doc_id=pdf_path.stem,
+        doc_name=pdf_path.name,
+        out_dir=out_dir,
+        stats=stats,
+        config=config.to_dict(),
+        progress=progress.state.to_dict(),
+        chunks=chunks,
+    )
+

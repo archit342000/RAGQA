@@ -1,59 +1,16 @@
-"""Balanced chunking utilities with caption and footnote sidecars."""
+"""Paragraph assembly and chunk emission."""
+
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from .config import IngestConfig
+from .config import Config
 from .pdf_io import Line
-
-
-@dataclass
-class Paragraph:
-    lines: List[Line]
-    text: str
-    page_spans: List[Tuple[int, Tuple[int, int]]]
-    is_heading: bool
-    junk_ratio: float
-
-    @property
-    def tokens(self) -> int:
-        return estimate_tokens(self.text)
-
-
-@dataclass
-class Chunk:
-    doc_id: str
-    chunk_id: str
-    type: str
-    text: str
-    tokens_est: int
-    page_spans: List[Tuple[int, Tuple[int, int] | None]]
-    section_hints: List[str] = field(default_factory=list)
-    neighbors: Dict[str, str | None] = field(default_factory=dict)
-    table_csv: str | None = None
-    evidence_offsets: List[Tuple[int, int]] = field(default_factory=list)
-    provenance: Dict[str, object] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, object]:
-        return {
-            "doc_id": self.doc_id,
-            "chunk_id": self.chunk_id,
-            "type": self.type,
-            "text": self.text,
-            "tokens_est": self.tokens_est,
-            "page_spans": [[page, span] for page, span in self.page_spans],
-            "section_hints": list(self.section_hints),
-            "neighbors": dict(self.neighbors),
-            "table_csv": self.table_csv,
-            "evidence_offsets": list(self.evidence_offsets),
-            "provenance": dict(self.provenance),
-        }
 
 
 def estimate_tokens(text: str) -> int:
@@ -63,175 +20,226 @@ def estimate_tokens(text: str) -> int:
 def junk_ratio(text: str) -> float:
     if not text:
         return 0.0
-    junk = sum(1 for ch in text if ch.isascii() and not ch.isalnum() and ch not in " .,;:-_()[]{}@#$%&*/\"'`+")
+    junk = sum(1 for ch in text if not (ch.isalnum() or ch.isspace() or ch in "-_,.;:()/%"))
     return junk / max(len(text), 1)
 
 
-def build_paragraphs(pages: Sequence[Sequence[Line]]) -> List[Paragraph]:
-    paragraphs: List[Paragraph] = []
-    for page_lines in pages:
-        current: List[Line] = []
-        for line in page_lines:
-            if _starts_new_paragraph(line, current):
-                if current:
-                    paragraphs.append(_make_paragraph(current))
-                    current = []
-            if line.text.strip():
-                current.append(line)
-        if current:
-            paragraphs.append(_make_paragraph(current))
-    return paragraphs
-
-
-def select_boundaries(paragraphs: Sequence[Paragraph]) -> set[int]:
-    if len(paragraphs) < 2:
-        return set()
-    texts = [p.text for p in paragraphs]
-    vectorizer = TfidfVectorizer(min_df=1)
-    matrix = vectorizer.fit_transform(texts)
-    similarities = cosine_similarity(matrix[:-1], matrix[1:])
-    drops = 1 - similarities.diagonal()
-    median = float(np.median(drops)) if len(drops) else 0.0
-    mad = float(np.median(np.abs(drops - median))) if len(drops) else 0.0
-    threshold = median + 0.5 * mad
-    strong = {idx for idx, drop in enumerate(drops) if drop >= threshold}
-    for idx, paragraph in enumerate(paragraphs[:-1]):
-        if paragraph.is_heading:
-            strong.add(idx)
-    return strong
-
-
-def build_chunks(
-    doc_id: str,
-    paragraphs: Sequence[Paragraph],
-    config: IngestConfig,
-    *,
-    provenance_hash: str,
-) -> Tuple[List[Chunk], float]:
-    chunks: List[Chunk] = []
-    total_paras = len(paragraphs)
-    dropped = 0
-    strong_boundaries = select_boundaries(paragraphs)
-    target_min, target_max = config.chunk_target_range
-    overlap_ratio = config.overlap_avg
-
-    chunk_lines: List[Line] = []
-    chunk_text_parts: List[str] = []
-    chunk_paragraphs: List[Paragraph] = []
-    carryover_lines: List[Line] = []
-    carryover_text: str = ""
-
-    def flush_chunk(strong_split: bool = False) -> None:
-        nonlocal chunk_lines, chunk_text_parts, chunk_paragraphs, carryover_lines, carryover_text
-        if not chunk_text_parts:
-            return
-        combined_text = " ".join(chunk_text_parts).strip()
-        tokens_est = estimate_tokens(combined_text)
-        chunk_id = f"{len(chunks):06d}"
-        page_spans = _merge_spans(chunk_lines)
-        hints = [para.lines[0].text.strip() for para in chunk_paragraphs if para.is_heading][:3]
-        chunk = Chunk(
-            doc_id=doc_id,
-            chunk_id=chunk_id,
-            type="body",
-            text=combined_text,
-            tokens_est=tokens_est,
-            page_spans=page_spans,
-            section_hints=hints,
-            neighbors={"prev": None, "next": None},
-            provenance={"hash": provenance_hash, "byte_range": None},
-        )
-        chunks.append(chunk)
-        carryover_lines = []
-        carryover_text = ""
-        if strong_split:
-            overlap_line_count = max(1, int(len(chunk_lines) * overlap_ratio))
-            carryover_lines = chunk_lines[-overlap_line_count:]
-            overlap_tokens = max(1, int(tokens_est * overlap_ratio))
-            words = combined_text.split()
-            carryover_text = " ".join(words[-overlap_tokens:])
-        chunk_lines = []
-        chunk_text_parts = []
-        chunk_paragraphs = []
-
-    for idx, paragraph in enumerate(paragraphs):
-        if paragraph.junk_ratio > config.noise_drop_ratio and not paragraph.is_heading:
-            dropped += 1
-            continue
-        if not chunk_text_parts and carryover_text:
-            chunk_text_parts.append(carryover_text)
-            chunk_lines.extend(carryover_lines)
-            chunk_paragraphs.extend([])
-            carryover_lines = []
-            carryover_text = ""
-        chunk_lines.extend(paragraph.lines)
-        chunk_text_parts.append(paragraph.text)
-        chunk_paragraphs.append(paragraph)
-
-        combined_text = " ".join(chunk_text_parts).strip()
-        current_tokens = estimate_tokens(combined_text)
-        strong_break = idx in strong_boundaries
-        last_para = idx == len(paragraphs) - 1
-        if current_tokens >= target_max or (strong_break and current_tokens >= target_min) or (last_para and chunk_text_parts):
-            flush_chunk(strong_split=strong_break)
-
-    flush_chunk()
-    noise_ratio = dropped / max(total_paras, 1)
-    _link_neighbors(chunks)
-    return chunks, noise_ratio
-
-
-def _merge_spans(lines: Sequence[Line]) -> List[Tuple[int, Tuple[int, int] | None]]:
-    spans: Dict[int, Tuple[int, int]] = {}
-    for line in lines:
-        start, end = spans.get(line.page_index, (None, None))
-        start_idx = line.line_index + 1
-        if start is None or start_idx < start:
-            start = start_idx
-        end_idx = line.line_index + 1
-        if end is None or end_idx > end:
-            end = end_idx
-        spans[line.page_index] = (start, end)
-    return [(page + 1, spans[page]) for page in sorted(spans)]
-
-
-def _starts_new_paragraph(line: Line, current: Sequence[Line]) -> bool:
-    if not current:
-        return False
-    if not current[-1].text.strip():
-        return True
-    if _is_heading(line.text):
-        return True
-    if line.text.strip().startswith(("- ", "•", "* ", "●")):
-        return True
-    return False
-
-
-def _is_heading(text: str) -> bool:
+def is_heading(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
     if stripped.endswith(":"):
         return True
-    if stripped.isupper() and len(stripped) > 3:
+    if stripped.isupper() and len(stripped.split()) <= 10:
         return True
     return False
 
 
-def _make_paragraph(lines: Sequence[Line]) -> Paragraph:
-    text = " ".join(line.text.strip() for line in lines if line.text.strip())
-    spans = _merge_spans(lines)
+def is_list_item(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped[0] in {"-", "*", "•"}:
+        return True
+    prefix = stripped[:2]
+    if prefix.isdigit() or (len(prefix) == 2 and prefix[0].isdigit() and prefix[1] == "."):
+        return True
+    return stripped[:2].lower() in {"a)", "b)", "c)"}
+
+
+@dataclass
+class Paragraph:
+    text: str
+    page_index: int
+    line_start: int
+    line_end: int
+    tokens: int
+    heading: bool = False
+    list_item: bool = False
+
+    def to_state(self) -> Dict[str, object]:
+        return {
+            "text": self.text,
+            "page_index": self.page_index,
+            "line_start": self.line_start,
+            "line_end": self.line_end,
+            "tokens": self.tokens,
+            "heading": self.heading,
+            "list_item": self.list_item,
+        }
+
+    @classmethod
+    def from_state(cls, payload: Dict[str, object]) -> "Paragraph":
+        return cls(
+            text=str(payload["text"]),
+            page_index=int(payload["page_index"]),
+            line_start=int(payload["line_start"]),
+            line_end=int(payload["line_end"]),
+            tokens=int(payload["tokens"]),
+            heading=bool(payload.get("heading", False)),
+            list_item=bool(payload.get("list_item", False)),
+        )
+
+
+@dataclass
+class Chunk:
+    chunk_id: str
+    text: str
+    page_spans: List[List[int | List[int]]]
+    tokens: int
+    type: str = "body"
+    table_csv: Optional[str] = None
+    evidence_offsets: List[int] = field(default_factory=list)
+    neighbors: Dict[str, Optional[str]] = field(default_factory=dict)
+
+
+class ChunkBuilder:
+    def __init__(self, config: Config, *, next_index: int = 0, last_chunk_id: Optional[str] = None, pending: Optional[List[Dict[str, object]]] = None) -> None:
+        self.config = config
+        self.next_index = next_index
+        self.last_chunk_id = last_chunk_id
+        self.pending: List[Paragraph] = [Paragraph.from_state(p) for p in pending or []]
+        self.vectorizer: Optional[TfidfVectorizer] = None
+
+    def _new_chunk_id(self) -> str:
+        chunk_id = f"{self.next_index:06d}"
+        self.next_index += 1
+        return chunk_id
+
+    def _build_vectors(self) -> Optional[List[List[float]]]:
+        if not self.pending:
+            return None
+        texts = [p.text for p in self.pending]
+        try:
+            self.vectorizer = TfidfVectorizer(min_df=1, max_df=0.9)
+            matrix = self.vectorizer.fit_transform(texts)
+            return matrix.toarray()
+        except ValueError:
+            return None
+
+    def _boundary_indices(self) -> List[int]:
+        vectors = self._build_vectors()
+        if vectors is None or len(vectors) < 2:
+            return []
+        sims = cosine_similarity(vectors[:-1], vectors[1:])
+        deltas = [1 - sims[i, i] for i in range(len(self.pending) - 1)]
+        if not deltas:
+            return []
+        median = sorted(deltas)[len(deltas) // 2]
+        mad = sorted(abs(delta - median) for delta in deltas)[len(deltas) // 2]
+        threshold = median + 0.5 * mad
+        return [idx + 1 for idx, delta in enumerate(deltas) if delta >= threshold]
+
+    def add_paragraph(self, paragraph: Paragraph) -> List[Chunk]:
+        self.pending.append(paragraph)
+        return self._emit_ready_chunks()
+
+    def _emit_ready_chunks(self) -> List[Chunk]:
+        emitted: List[Chunk] = []
+        boundaries = set(self._boundary_indices())
+        cursor = 0
+        while cursor < len(self.pending):
+            tokens = 0
+            end = cursor
+            while end < len(self.pending) and tokens < self.config.chunk_tokens_min:
+                tokens += self.pending[end].tokens
+                end += 1
+            if end < len(self.pending):
+                tokens_candidate = sum(p.tokens for p in self.pending[cursor:end])
+                if tokens_candidate > self.config.chunk_tokens_max and cursor + 1 < len(self.pending):
+                    end = cursor + 1
+            if end >= len(self.pending):
+                break
+            if end not in boundaries and tokens < self.config.chunk_tokens_max:
+                break
+            emitted.append(self._make_chunk(self.pending[cursor:end]))
+            cursor = self._overlap_cursor(cursor, end)
+        self.pending = self.pending[cursor:]
+        return emitted
+
+    def _make_chunk(self, paragraphs: Sequence[Paragraph]) -> Chunk:
+        text = "\n".join(p.text for p in paragraphs)
+        chunk_id = self._new_chunk_id()
+        spans: List[List[int | List[int]]] = []
+        for para in paragraphs:
+            spans.append([para.page_index + 1, [para.line_start + 1, para.line_end + 1]])
+        chunk = Chunk(
+            chunk_id=chunk_id,
+            text=text,
+            page_spans=spans,
+            tokens=estimate_tokens(text),
+            neighbors={"prev": self.last_chunk_id, "next": None},
+        )
+        if self.last_chunk_id is not None:
+            pass
+        self.last_chunk_id = chunk_id
+        return chunk
+
+    def _overlap_cursor(self, start: int, end: int) -> int:
+        overlap_ratio = (self.config.overlap_min + self.config.overlap_max) / 2
+        tokens = 0
+        cursor = end
+        while cursor > start and tokens < overlap_ratio * self.config.chunk_tokens_min:
+            cursor -= 1
+            tokens += self.pending[cursor].tokens
+        return cursor
+
+    def finalize(self) -> List[Chunk]:
+        emitted: List[Chunk] = []
+        if self.pending:
+            emitted.append(self._make_chunk(self.pending))
+            self.pending = []
+        return emitted
+
+    def state_payload(self) -> Dict[str, object]:
+        return {
+            "next_chunk_index": self.next_index,
+            "last_chunk_id": self.last_chunk_id,
+            "pending_paragraphs": [p.to_state() for p in self.pending],
+        }
+
+
+def paragraphs_from_lines(lines: Sequence[Line], *, config: Config) -> Tuple[List[Paragraph], int]:
+    paragraphs: List[Paragraph] = []
+    buffer: List[Line] = []
+    for line in lines:
+        if not line.text.strip():
+            if buffer:
+                paragraphs.append(_build_paragraph(buffer, config))
+                buffer = []
+            continue
+        buffer.append(line)
+    if buffer:
+        paragraphs.append(_build_paragraph(buffer, config))
+    kept: List[Paragraph] = []
+    dropped = 0
+    for paragraph in paragraphs:
+        if _keep_paragraph(paragraph, config):
+            kept.append(paragraph)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+def _build_paragraph(lines: Sequence[Line], config: Config) -> Paragraph:
+    text = " ".join(line.text.strip() for line in lines)
+    heading = any(is_heading(line.text) for line in lines)
+    list_item = any(is_list_item(line.text) for line in lines)
+    tokens = estimate_tokens(text)
     return Paragraph(
-        lines=list(lines),
         text=text,
-        page_spans=spans,
-        is_heading=_is_heading(lines[0].text),
-        junk_ratio=junk_ratio(text),
+        page_index=lines[0].page_index,
+        line_start=lines[0].line_index,
+        line_end=lines[-1].line_index,
+        tokens=tokens,
+        heading=heading,
+        list_item=list_item,
     )
 
 
-def _link_neighbors(chunks: Sequence[Chunk]) -> None:
-    for idx, chunk in enumerate(chunks):
-        prev_id = chunks[idx - 1].chunk_id if idx > 0 else None
-        next_id = chunks[idx + 1].chunk_id if idx < len(chunks) - 1 else None
-        chunk.neighbors = {"prev": prev_id, "next": next_id}
+def _keep_paragraph(paragraph: Paragraph, config: Config) -> bool:
+    ratio = junk_ratio(paragraph.text)
+    if ratio <= config.junk_char_ratio:
+        return True
+    return paragraph.heading or paragraph.list_item
+

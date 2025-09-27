@@ -20,7 +20,6 @@
     "chunks_n": {"type": "integer", "minimum": 0},
     "avg_tokens": {"type": "number", "minimum": 0},
     "noise_ratio": {"type": "number", "minimum": 0, "maximum": 1},
-    "skipped_tables_n": {"type": "integer", "minimum": 0},
-    "budget_exhausted": {"type": "string"}
+    "skipped_tables_n": {"type": "integer", "minimum": 0}
   }
 }

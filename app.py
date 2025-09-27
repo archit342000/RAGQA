@@ -31,8 +31,9 @@ from typing import Dict, List, MutableMapping, Sequence
 import gradio as gr
 
 from env_loader import load_dotenv_once
-from pdf_ingest import IngestConfig, run_pipeline
-from pdf_ingest.pipeline import IngestResult, write_artifacts
+from pdf_ingest import Config, run_pipeline
+from pdf_ingest.pipeline import PipelineResult
+from pdf_ingest.pdf_io import load_document_payload
 from retrieval import RetrievalConfig, build_indexes, retrieve
 
 # Configure module-level logging using an environment-driven log level so that
@@ -49,7 +50,6 @@ load_dotenv_once()
 # driver expects the values.
 MODE_LABEL_TO_STRATEGY = {
     "Fast": "fast",
-    "Auto": "auto",
     "Thorough": "thorough",
 }
 
@@ -101,7 +101,7 @@ def _gold_export_enabled() -> bool:
 def _mode_choices() -> List[str]:
     """List user-facing parsing options based on server capabilities."""
 
-    return ["Fast", "Auto", "Thorough"]
+    return ["Fast", "Thorough"]
 
 
 def _default_mode() -> str:
@@ -123,7 +123,7 @@ def _default_retrieval_label() -> str:
     return DEFAULT_RETRIEVAL_LABEL if DEFAULT_RETRIEVAL_LABEL in RETRIEVAL_LABEL_TO_KEY else "Semantic → Rerank"
 
 
-def _build_debug_payload(results: Sequence[IngestResult]) -> Dict[str, object]:
+def _build_debug_payload(results: Sequence[PipelineResult]) -> Dict[str, object]:
     """Assemble per-document and aggregate statistics for the debug panel."""
 
     per_doc: Dict[str, object] = {}
@@ -134,7 +134,7 @@ def _build_debug_payload(results: Sequence[IngestResult]) -> Dict[str, object]:
         per_doc[result.doc_id] = {
             "file_name": result.doc_name,
             "stats": result.stats,
-            "events": result.events,
+            "progress": result.progress,
         }
         total_time += float(result.stats.get("parse_time_s", 0.0))
         total_chunks += len(result.chunks)
@@ -362,7 +362,7 @@ def parse_batch(files, mode_label: str, *, full_output: bool = False):
     mode = MODE_LABEL_TO_STRATEGY.get(mode_label or "Fast", "fast")
     status_lines: List[str] = []
 
-    ingest_results: List[IngestResult] = []
+    ingest_results: List[PipelineResult] = []
     chunk_registry: Dict[str, dict] = {}
     doc_chunk_map: Dict[str, dict] = {}
     chunk_list: List[Dict[str, object]] = []
@@ -374,31 +374,26 @@ def parse_batch(files, mode_label: str, *, full_output: bool = False):
             status_lines.append(f"Missing file: {file_path}")
             continue
         artifact_dir = _artifact_dir_for_doc(file_path.stem)
-        config = IngestConfig()
+        config = Config()
+        config.mode = mode
         try:
-            result = run_pipeline(file_path, artifact_dir, config, mode=mode)
+            result = run_pipeline(file_path, artifact_dir, config)
             ingest_results.append(result)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Failed to parse %s", file_path)
             status_lines.append(f"Failed to parse {file_path.name}: {exc}")
             continue
 
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        write_artifacts(result, artifact_dir)
-
         ingest_stats[result.doc_id] = result.stats
         status_lines.append(
             f"{result.doc_name}: {len(result.chunks)} chunks ({result.stats.get('parse_time_s', 0)}s)"
         )
 
-        pages_payload = [
-            {
-                "page_num": page.index + 1,
-                "text": page.text,
-                "glyphs": page.glyphs,
-            }
-            for page in result.pages
-        ]
+        pages_payload = []
+        pages, _ = load_document_payload(file_path)
+        for page in pages:
+            page_text = "\n".join(line.text for line in page.lines)
+            pages_payload.append({"page_num": page.index + 1, "text": page_text, "glyphs": page.glyph_count})
         parsed_docs_payload.append(
             {
                 "doc_id": result.doc_id,

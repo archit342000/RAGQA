@@ -1,58 +1,39 @@
-"""Command-line entry point for the ingestion pipeline."""
+"""Command-line entry point for the deterministic parser."""
+
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
-from .config import IngestConfig, load_config
-from .pipeline import IngestResult, run_pipeline, write_artifacts
-
-
-def _print_events(result: IngestResult) -> None:
-    for event in result.events:
-        print(json.dumps(event, ensure_ascii=False))
+from .config import Config
+from .pipeline import run_pipeline
 
 
-def parse_and_chunk(
-    pdf_path: Path,
-    out_dir: Path,
-    config: IngestConfig,
-    *,
-    mode: str = "fast",
-    config_path: Path | None = None,
-) -> dict:
-    """Run the ingestion pipeline and persist JSONL/CSV artifacts."""
-
-    result = run_pipeline(pdf_path, out_dir, config, mode=mode)
-    _print_events(result)
-    write_artifacts(result, out_dir, config_source=config_path)
-    summary = {
-        "doc_id": result.doc_id,
-        "chunks": len(result.chunks),
-        "tables": len(result.tables),
-        "out_dir": str(out_dir),
-        "stats": result.stats,
-    }
-    print(json.dumps({"event": "cli_summary", **summary}, ensure_ascii=False))
-    return summary
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Parse PDFs into retrieval-ready chunks")
     parser.add_argument("input_pdf", type=Path)
     parser.add_argument("--outdir", type=Path, required=True)
-    parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--mode", choices=["fast", "thorough", "auto"], default="fast")
+    parser.add_argument("--config", type=Path, help="Optional JSON config override")
+    parser.add_argument("--mode", choices=["fast", "thorough"], default="fast")
     return parser
 
 
+def parse_and_chunk(input_pdf: Path, outdir: Path, *, config: Config, mode: str) -> Dict[str, Any]:
+    config.mode = mode
+    result = run_pipeline(input_pdf, outdir, config)
+    summary = {"event": "cli_summary", "path": str(input_pdf), "outdir": str(outdir), **result.stats}
+    print(json.dumps(summary, ensure_ascii=False))
+    return summary
+
+
 def main(argv: List[str] | None = None) -> int:
-    parser = build_arg_parser()
+    parser = build_parser()
     args = parser.parse_args(argv)
-    config = load_config(str(args.config) if args.config else None)
-    parse_and_chunk(args.input_pdf, args.outdir, config, mode=args.mode, config_path=args.config)
+    config_path = str(args.config) if args.config else None
+    config = Config.from_sources(json_path=config_path)
+    parse_and_chunk(args.input_pdf, args.outdir, config=config, mode=args.mode)
     return 0
 
 
