@@ -1,107 +1,106 @@
-# CPU-First PDF Parsing & Chunking
+# CPU-First PDF Parser & Chunker
 
-This repository now ships a lightweight parsing and chunking stack tailored for
-Hugging Face Spaces running on ZeroGPU. The pipeline converts uploaded PDFs into
-retrieval-ready JSONL chunks, optional CSV tables, and detailed stats while
-respecting strict latency budgets.
+A lightweight, offline-friendly pipeline that converts PDFs into retrieval-ready
+artifacts. The system favours CPU execution for Hugging Face Spaces running on
+ZeroGPU, opportunistically using OCR when pages lack extractable glyphs.
 
 ## Features
 
-- **CPU-first extraction** powered by PyMuPDF with optional page-level OCR via
-  Tesseract/pytesseract when glyph counts fall below a configurable threshold.
-- **Time-bounded execution** with FAST (≤20s) and THOROUGH (≤40s) modes plus
-  graceful early exits that still emit partial outputs and structured logs.
-- **Balanced chunking** that grows paragraphs, applies TF–IDF cosine-drop topic
-  boundaries, and keeps captions/footnotes as sidecars.
-- **Table emission** using a single-pass delimiter confidence score that never
-  blocks the pipeline.
-- **Evidence-rich artifacts**: `chunks.jsonl`, `/tables/*.csv`, `stats.json`,
-  and the resolved `config_used.json` for reproducibility.
-- **CLI and optional HTTP wrapper** for easy integration into Spaces or local
-  automation.
+- **Time-bounded parsing** with FAST (≤20s) and THOROUGH (≤40s) budgets, plus an
+  AUTO mode that promotes short, noisy documents to the thorough budget.
+- **On-demand OCR** using OCRmyPDF with conservative flags and early exits when
+  the remaining budget would be exceeded.
+- **Balanced chunking** that rebuilds paragraphs, applies TF–IDF cosine-drop
+  boundaries, enforces 350–600 token targets, and limits overlaps to 10–15% at
+  strong boundaries only.
+- **Sidecars for captions and footnotes** detected via regex anchors within
+  ±3 lines of figure/table markers, preventing leakage into body chunks.
+- **Lightweight table detection** driven by delimiter regularity and digit
+  ratios; confident tables are exported to CSV while low-confidence candidates
+  are skipped with counters logged.
+- **Evidence-rich outputs**: chunk page spans, provenance hashes, optional
+  table CSV references, and structured stats.
 
 ## Installation
 
-```bash
-pip install -r requirements.txt
-```
-
-System packages required for OCR:
+System packages for OCR (Ubuntu/Debian):
 
 ```bash
 sudo apt-get update && sudo apt-get install -y tesseract-ocr qpdf ghostscript
 ```
 
+Python dependencies:
+
+```bash
+pip install -r requirements.txt
+python -m nltk.downloader punkt
+```
+
 ## CLI Usage
 
 ```bash
-python parse_and_chunk.py input.pdf --outdir out/my_doc --mode fast
+python -m pdf_ingest.cli parse_and_chunk input.pdf --outdir out/doc --mode fast
 ```
 
 Optional flags:
 
-- `--config path/to/config.json` – override defaults.
-- `--mode fast|thorough|auto` – adjust time budgets. `auto` uses the thorough
-  budget when the document has ≤50 pages.
+- `--mode fast|thorough|auto` – choose the time budget (AUTO promotes docs with
+  ≤50 pages to THOROUGH).
+- `--config path.json` – JSON overrides for the configuration (see below).
 
-Outputs follow the mandated layout:
+Artifacts are written under `out/doc/`:
 
 ```
-/out/<doc_id>/chunks.jsonl
-/out/<doc_id>/tables/*.csv
-/out/<doc_id>/stats.json
-/out/<doc_id>/config_used.json
+chunks.jsonl
+config_used.json
+stats.json
+/tables/*.csv
 ```
 
-`chunks.jsonl` records comply with `schemas/chunks.schema.json`, including
-`page_spans`, `neighbors`, caption/footnote chunks, and provenance hashes.
-`stats.json` matches `schemas/stats.schema.json`.
+Each chunk record follows `schemas/chunks.schema.json`, while `stats.json`
+complies with `schemas/stats.schema.json`.
 
 ## FastAPI Endpoint
 
 ```bash
-uvicorn server:app --reload --host 0.0.0.0 --port 8000
+uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
-POST `/parse` with a PDF (and optional config JSON) to receive a JSON summary
-plus the path to generated artifacts.
+POST `/parse` with a PDF (and optional JSON config overrides) to run the same
+pipeline and receive a JSON summary.
 
-## Configuration
+## Configuration Defaults
 
-See `parser/config.py` for the authoritative defaults:
+Authoritative defaults from `pdf_ingest.config`:
 
-- `glyph_min_for_text_page=200`
-- `fast_budget_s=20`
-- `thorough_budget_s=40`
-- `max_pages=500`
-- `table_digit_ratio>=0.4`
-- `chunk_token_target=350..600`
-- `overlap=0.1..0.15`
-- `noise_drop_ratio>0.3`
-- `bbox_mode=line`
+```
+glyph_min_for_text_page=200
+fast_budget_s=20
+thorough_budget_s=40
+max_pages=500
+table_digit_ratio>=0.4
+chunk_token_target=350..600
+overlap=0.1..0.15
+noise_drop_ratio>0.3
+```
 
-Override any subset via the CLI `--config` JSON or the HTTP API payload. The
-resolved configuration for each run is saved to `config_used.json`.
-
-## Token Estimation
-
-Token counts are estimated using a 4-characters-per-token heuristic, chosen for
-speed on CPU-only environments. Swap in a tokenizer if tighter accounting is
-required.
+Overridden values and runtime mode are persisted to `config_used.json` for
+traceability.
 
 ## Testing
-
-Run the test suite:
 
 ```bash
 pytest
 ```
 
-Unit tests cover glyph routing, caption detection, TF–IDF boundary selection,
-and table confidence handling. Integration tests exercise native vs. scanned PDF
-fixtures (see `examples/`).
+Unit tests cover chunk token estimation, overlap behaviour, and table delimiter
+scoring. Extend with real PDF fixtures for integration coverage.
 
-## Examples
+## Notes
 
-Synthetic sample outputs demonstrating the artifact structure live under
-`examples/sample_native/` and `examples/sample_scanned/`.
+- Token counts use a 4-characters-per-token heuristic for CPU speed; replace
+  with a tokenizer if tighter accounting is required.
+- Evidence byte ranges default to `null` when unavailable, but provenance hashes
+  are always recorded.
+- Table CSVs include `source_page,row_idx,col_idx,cell_bbox,text` columns, and
+  `chunk.table_csv` references the CSV path plus `#rows,cols` metadata.

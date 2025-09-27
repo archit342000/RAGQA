@@ -1,40 +1,30 @@
-"""Tests for table detection heuristics."""
-from __future__ import annotations
-
 from pathlib import Path
 
-from parser.table_extractor import detect_table_candidates, export_table
-from parser.types import BBox, LineSpan
+from pdf_ingest.pdf_io import Line
+from pdf_ingest.table_detect import detect_tables
 
 
-def _line(text: str, idx: int) -> LineSpan:
-    return LineSpan(
-        page_index=0,
-        line_index=idx,
-        text=text,
-        bbox=BBox(0, idx * 10, 50, idx * 10 + 5),
-        char_start=idx * 10,
-        char_end=idx * 10 + len(text),
-    )
+def _line(page: int, idx: int, text: str) -> Line:
+    return Line(page_index=page, line_index=idx, text=text, bbox=(0.0, float(idx), 120.0, float(idx) + 12.0), x_center=60.0, y_top=float(idx))
 
 
-def test_table_confidence_exports(tmp_path: Path) -> None:
-    lines = [_line("A,B,C", 0), _line("1,2,3", 1)]
-    candidates = detect_table_candidates(lines)
-    assert len(candidates) == 1
-    table = export_table(candidates[0], tmp_path, confidence_threshold=0.1)
-    assert table.csv_path is not None
-    csv_file = Path(table.csv_path)
-    assert csv_file.exists()
+def test_confident_table_emits_csv(tmp_path):
+    rows = [
+        _line(0, 0, "A,B,C"),
+        _line(0, 1, "1,2,3"),
+        _line(0, 2, "4,5,6"),
+    ]
+    artifacts, skipped = detect_tables([rows], tmp_path, confidence_threshold=0.3)
+    assert skipped == 0
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.csv_path is not None and Path(artifact.csv_path).exists()
+    contents = Path(artifact.csv_path).read_text().splitlines()
+    assert contents[0] == "source_page,row_idx,col_idx,cell_bbox,text"
 
 
-def test_table_low_confidence_skips(tmp_path: Path) -> None:
-    lines = [_line("No table here", 0)]
-    candidates = detect_table_candidates(lines)
-    assert candidates == []
-    # artificially create a candidate but with low delimiter score
-    bad_candidate = detect_table_candidates([_line("1 2 3", 0), _line("4 5 6", 1)])
-    if bad_candidate:
-        table = export_table(bad_candidate[0], tmp_path, confidence_threshold=10.0)
-        assert table.csv_path is None
-        assert table.skipped_reason == "low_confidence"
+def test_low_confidence_skipped(tmp_path):
+    rows = [[_line(0, 0, "free text line")]]
+    artifacts, skipped = detect_tables(rows, tmp_path, confidence_threshold=0.5)
+    assert not artifacts
+    assert skipped == 0

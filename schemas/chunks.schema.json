@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/schemas/chunks.schema.json",
   "title": "ChunkRecord",
   "type": "object",
   "required": [
@@ -25,22 +24,24 @@
     "page_spans": {
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "page": {"type": "integer", "minimum": 0},
-          "span": {
-            "type": "array",
-            "items": {"type": "integer"},
-            "minItems": 1
-          },
-          "bbox": {
-            "type": ["array", "null"],
-            "items": {"type": "number"},
-            "minItems": 4,
-            "maxItems": 4
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": [
+          {"type": "integer", "minimum": 1},
+          {
+            "oneOf": [
+              {"type": "null"},
+              {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1},
+                "minItems": 2,
+                "maxItems": 2
+              },
+              {"type": "string"}
+            ]
           }
-        },
-        "required": ["page", "span"]
+        ]
       }
     },
     "section_hints": {
@@ -69,9 +70,9 @@
       "type": "object",
       "properties": {
         "byte_range": {"type": ["array", "null"], "items": {"type": "integer"}},
-        "hash": {"type": ["string", "null"]}
+        "hash": {"type": "string"}
       },
-      "required": ["byte_range", "hash"]
+      "required": ["hash"]
     }
   }
 }

@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/schemas/stats.schema.json",
   "title": "ParsingStats",
   "type": "object",
   "required": [
@@ -21,6 +20,7 @@
     "chunks_n": {"type": "integer", "minimum": 0},
     "avg_tokens": {"type": "number", "minimum": 0},
     "noise_ratio": {"type": "number", "minimum": 0, "maximum": 1},
-    "skipped_tables_n": {"type": "integer", "minimum": 0}
+    "skipped_tables_n": {"type": "integer", "minimum": 0},
+    "budget_exhausted": {"type": "string"}
   }
 }
