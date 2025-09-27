@@ -204,6 +204,11 @@ class SynthItem(BaseModel):
         normalized = value.strip()
         if _violates_person_rules(normalized):
             raise ValueError("question must be written in third person")
+        lowered = normalized.lower()
+        if re.search(r"\b(someone|somebody|something|somewhere)\b", lowered):
+            raise ValueError("question must avoid vague placeholders")
+        if re.search(r"\baccording to (the|this) (text|passage|document)\b", lowered):
+            raise ValueError("question must avoid meta references")
         return value
 
     @field_validator("wh")

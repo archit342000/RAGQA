@@ -18,7 +18,7 @@ class ChunkLike(TypedDict, total=False):
     page_start: int
     page_end: int
     token_len: int
-    meta: dict[str, str]
+    meta: dict[str, object]
     score: float
     embedding: "np.ndarray"
 

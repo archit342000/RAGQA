@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ParserConfig",
+  "type": "object",
+  "properties": {
+    "glyph_min_for_text_page": {"type": "integer", "minimum": 0},
+    "table_digit_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "table_score_conf": {"type": "number", "minimum": 0},
+    "chunk_tokens_min": {"type": "integer", "minimum": 1},
+    "chunk_tokens_max": {"type": "integer", "minimum": 1},
+    "overlap_min": {"type": "number", "minimum": 0, "maximum": 1},
+    "overlap_max": {"type": "number", "minimum": 0, "maximum": 1},
+    "ocr_retry": {"type": "integer", "minimum": 0},
+    "rasterizations_per_page": {"type": "integer", "minimum": 1},
+    "junk_char_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "dpi_full": {"type": "integer", "minimum": 72},
+    "dpi_retry": {"type": "integer", "minimum": 72},
+    "bbox_mode": {"enum": ["line", "band"]},
+    "mode": {"enum": ["fast", "thorough"]},
+    "max_pages": {"type": "integer", "minimum": 1},
+    "progress_flush_interval": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ParsingStats",
+  "type": "object",
+  "required": [
+    "parse_time_s",
+    "lines_total",
+    "tables_emitted",
+    "captions_extracted",
+    "chunks_n",
+    "avg_tokens",
+    "noise_ratio",
+    "skipped_tables_n",
+    "tsv_empty_alerts"
+  ],
+  "properties": {
+    "parse_time_s": {"type": "number", "minimum": 0},
+    "lines_total": {"type": "integer", "minimum": 0},
+    "tables_emitted": {"type": "integer", "minimum": 0},
+    "captions_extracted": {"type": "integer", "minimum": 0},
+    "chunks_n": {"type": "integer", "minimum": 0},
+    "avg_tokens": {"type": "number", "minimum": 0},
+    "noise_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+    "skipped_tables_n": {"type": "integer", "minimum": 0},
+    "tsv_empty_alerts": {"type": "integer", "minimum": 0}
+  }
+}

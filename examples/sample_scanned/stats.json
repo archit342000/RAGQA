@@ -1,0 +1,10 @@
+{
+  "parse_time_s": 8.7,
+  "lines_total": 15,
+  "tables_emitted": 0,
+  "captions_extracted": 1,
+  "chunks_n": 2,
+  "avg_tokens": 10.0,
+  "noise_ratio": 0.12,
+  "skipped_tables_n": 0
+}

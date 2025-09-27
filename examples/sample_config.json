@@ -1,0 +1,13 @@
+{
+  "glyph_min_for_text_page": 150,
+  "fast_budget_s": 15,
+  "thorough_budget_s": 45,
+  "max_pages": 300,
+  "table_digit_ratio": 0.5,
+  "chunk_target_min": 300,
+  "chunk_target_max": 550,
+  "overlap_min": 0.1,
+  "overlap_max": 0.14,
+  "noise_drop_ratio": 0.25,
+  "mode": "fast"
+}

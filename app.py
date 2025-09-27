@@ -20,6 +20,7 @@ configuration helpers, parsing callbacks, retrieval orchestration, and finally
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -29,11 +30,10 @@ from typing import Dict, List, MutableMapping, Sequence
 
 import gradio as gr
 
-from chunking import chunk_documents
 from env_loader import load_dotenv_once
-from parser.driver import parse_documents
-from parser.metrics import merge_doc_stats
-from parser.types import ParsedDoc, RunReport
+from pdf_ingest import Config, run_pipeline
+from pdf_ingest.pipeline import PipelineResult
+from pdf_ingest.pdf_io import load_document_payload
 from retrieval import RetrievalConfig, build_indexes, retrieve
 
 # Configure module-level logging using an environment-driven log level so that
@@ -50,15 +50,7 @@ load_dotenv_once()
 # driver expects the values.
 MODE_LABEL_TO_STRATEGY = {
     "Fast": "fast",
-    "Auto": "auto",
-    "High-Res": "hi_res",
-}
-
-# Labels presented to the user for chunking strategies mapped to the internal
-# identifiers expected by the chunking pipeline.
-CHUNK_MODE_LABELS = {
-    "Semantic (recommended)": "semantic",
-    "Fixed": "fixed",
+    "Thorough": "thorough",
 }
 
 # Retrieval engine labels surfaced in the UI mapped to the engine keys consumed
@@ -75,13 +67,21 @@ RETRIEVAL_KEY_TO_LABEL = {v: k for k, v in RETRIEVAL_LABEL_TO_KEY.items()}
 RETRIEVAL_CFG = RetrievalConfig.from_env()
 DEFAULT_RETRIEVAL_LABEL = RETRIEVAL_KEY_TO_LABEL.get(RETRIEVAL_CFG.default_engine, "Semantic → Rerank")
 
+ARTIFACTS_ROOT = Path(os.getenv("INGEST_ARTIFACT_DIR", "artifacts/ui"))
+ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
 
-def _hi_res_enabled() -> bool:
-    """Return True when hi-res parsing is explicitly enabled via env."""
 
-    # The ENABLE_HI_RES flag defaults to false because hi-res parsing is
-    # GPU-intensive. The UI checks this before surfacing the option.
-    return os.getenv("ENABLE_HI_RES", "false").strip().lower() == "true"
+def _artifact_dir_for_doc(doc_id: str) -> Path:
+    """Return a unique artifact directory for the provided document."""
+
+    candidate = ARTIFACTS_ROOT / doc_id
+    if not candidate.exists():
+        return candidate
+    for idx in itertools.count(1):
+        alt = ARTIFACTS_ROOT / f"{doc_id}_{idx:02d}"
+        if not alt.exists():
+            return alt
+    raise RuntimeError("Unable to allocate artifact directory")
 
 
 def _show_debug() -> bool:
@@ -101,12 +101,7 @@ def _gold_export_enabled() -> bool:
 def _mode_choices() -> List[str]:
     """List user-facing parsing options based on server capabilities."""
 
-    # Always provide Fast and Auto. Append High-Res only when explicitly
-    # permitted to avoid exposing a configuration that will immediately fail.
-    choices = ["Fast", "Auto"]
-    if _hi_res_enabled():
-        choices.append("High-Res")
-    return choices
+    return ["Fast", "Thorough"]
 
 
 def _default_mode() -> str:
@@ -114,7 +109,7 @@ def _default_mode() -> str:
 
     # Read the strategy requested by the operator, convert it back into a UI
     # label, and fall back to a safe default when the value is unrecognised.
-    env_default = os.getenv("UNSTRUCTURED_STRATEGY", "fast").strip().lower()
+    env_default = os.getenv("INGEST_MODE_DEFAULT", "fast").strip().lower()
     reverse_map = {v: k for k, v in MODE_LABEL_TO_STRATEGY.items()}
     candidate = reverse_map.get(env_default, "Fast")
     return candidate if candidate in _mode_choices() else "Fast"
@@ -128,27 +123,34 @@ def _default_retrieval_label() -> str:
     return DEFAULT_RETRIEVAL_LABEL if DEFAULT_RETRIEVAL_LABEL in RETRIEVAL_LABEL_TO_KEY else "Semantic → Rerank"
 
 
-def _build_debug_payload(docs: Sequence[ParsedDoc], report: RunReport) -> Dict[str, object]:
+def _build_debug_payload(results: Sequence[PipelineResult]) -> Dict[str, object]:
     """Assemble per-document and aggregate statistics for the debug panel."""
 
-    # Collect per-document metrics so operators can drill into parsing stats for
-    # individual files when troubleshooting.
-    per_doc = {
-        doc.doc_id: {
-            "file_name": doc.pages[0].metadata.get("file_name", doc.doc_id) if doc.pages else doc.doc_id,
-            "parser_used": doc.parser_used,
-            "stats": doc.stats,
+    per_doc: Dict[str, object] = {}
+    total_time = 0.0
+    total_chunks = 0
+    total_tables = 0
+    for result in results:
+        per_doc[result.doc_id] = {
+            "file_name": result.doc_name,
+            "stats": result.stats,
+            "progress": result.progress,
         }
-        for doc in docs
+        total_time += float(result.stats.get("parse_time_s", 0.0))
+        total_chunks += len(result.chunks)
+        total_tables += sum(1 for chunk in result.chunks if chunk.get("type") == "table")
+
+    aggregate = {
+        "documents": len(results),
+        "total_chunks": total_chunks,
+        "total_tables": total_tables,
+        "avg_parse_time_s": round(total_time / max(len(results), 1), 3) if results else 0.0,
     }
-    # Merge metrics across all documents for a quick high-level view.
-    aggregate = merge_doc_stats(list(docs))
-    payload: Dict[str, object] = {
-        "run_report": report._asdict(),
+
+    return {
         "aggregate": aggregate,
         "documents": per_doc,
     }
-    return payload
 
 
 def _fingerprint_chunks(chunks: Sequence[MutableMapping[str, object]]) -> str:
@@ -345,145 +347,142 @@ def _ensure_retrieval_state(
     return retrieval_state
 
 
-def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: bool = False):
+def parse_batch(files, mode_label: str, *, full_output: bool = False):
     """Handle a UI request to parse documents and emit retrieval chunks."""
 
-    # Validate the incoming file list to avoid calling the parser on empty
-    # selections (this surfaces friendlier UI errors).
     if not files:
         raise gr.Error("Please upload at least one document.")
 
     if not isinstance(files, Sequence):
         files = [files]
-    file_paths = [str(Path(f)) for f in files if f]
+    file_paths = [Path(f) for f in files if f]
     if not file_paths:
         raise gr.Error("No readable files provided.")
 
-    # Resolve the parsing strategy, respecting server capabilities when hi-res
-    # parsing is not permitted.
-    strategy = MODE_LABEL_TO_STRATEGY.get(mode_label or "Fast", "fast")
+    mode = MODE_LABEL_TO_STRATEGY.get(mode_label or "Fast", "fast")
     status_lines: List[str] = []
-    if strategy == "hi_res" and not _hi_res_enabled():
-        status_lines.append("High-Res disabled by server configuration. Falling back to Fast mode.")
-        strategy = "fast"
 
-    # Run the parser driver and collect the structured documents plus a run
-    # report describing any warnings or skipped files.
-    docs, parse_report = parse_documents(file_paths, strategy_env=strategy)
-
-    # Invoke the chunking pipeline using the selected mode so the retrieval
-    # system receives consistent chunk structures.
-    chunk_mode = CHUNK_MODE_LABELS.get(chunk_mode_label, "semantic")
-    chunks, chunk_stats = chunk_documents(docs, mode=chunk_mode)
-
-    parsed_docs_payload: List[Dict[str, object]] = []
-    for doc in docs:
-        doc_name = getattr(doc, "doc_name", None) or doc.doc_id
-        pages_payload: List[Dict[str, object]] = []
-        for page in doc.pages:
-            pages_payload.append(
-                {
-                    "page_num": page.page_num,
-                    "text": page.text,
-                    "offset_start": getattr(page, "offset_start", None),
-                    "offset_end": getattr(page, "offset_end", None),
-                }
-            )
-        parsed_docs_payload.append(
-            {
-                "doc_id": doc.doc_id,
-                "doc_name": doc_name,
-                "pages": pages_payload,
-                "meta": getattr(doc, "meta", {}),
-            }
-        )
-
-    # Populate dictionaries for quick lookup by chunk key, along with per-doc
-    # mappings required for the document/chunk dropdowns.
+    ingest_results: List[PipelineResult] = []
     chunk_registry: Dict[str, dict] = {}
     doc_chunk_map: Dict[str, dict] = {}
     chunk_list: List[Dict[str, object]] = []
+    parsed_docs_payload: List[Dict[str, object]] = []
+    ingest_stats: Dict[str, dict] = {}
 
-    for index, chunk in enumerate(chunks):
-        chunk_key = f"{chunk.doc_id}:{index}"
-        record = {
-            "id": chunk_key,
-            "doc_id": chunk.doc_id,
-            "doc_name": chunk.doc_name,
-            "page_start": chunk.page_start,
-            "page_end": chunk.page_end,
-            "section_title": chunk.section_title,
-            "text": chunk.text,
-            "token_len": chunk.token_len,
-            "meta": chunk.meta,
-        }
-        # Store a retrieval-friendly copy (without the optional section title)
-        # so we can rebuild indexes quickly.
-        chunk_list.append({k: v for k, v in record.items() if k != "section_title"})
-        chunk_registry[chunk_key] = record
-        entry = doc_chunk_map.setdefault(
-            chunk.doc_id,
-            {"doc_name": chunk.doc_name, "chunk_keys": []},
+    for file_path in file_paths:
+        if not file_path.exists():
+            status_lines.append(f"Missing file: {file_path}")
+            continue
+        artifact_dir = _artifact_dir_for_doc(file_path.stem)
+        config = Config()
+        config.mode = mode
+        try:
+            result = run_pipeline(file_path, artifact_dir, config)
+            ingest_results.append(result)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Failed to parse %s", file_path)
+            status_lines.append(f"Failed to parse {file_path.name}: {exc}")
+            continue
+
+        ingest_stats[result.doc_id] = result.stats
+        status_lines.append(
+            f"{result.doc_name}: {len(result.chunks)} chunks ({result.stats.get('parse_time_s', 0)}s)"
         )
-        entry["chunk_keys"].append(chunk_key)
 
-    # Build dropdown choices for documents and their chunks so the inspector can
-    # present the first available entry by default.
+        pages_payload = []
+        pages, _ = load_document_payload(file_path)
+        for page in pages:
+            page_text = "\n".join(line.text for line in page.lines)
+            pages_payload.append({"page_num": page.index + 1, "text": page_text, "glyphs": page.glyph_count})
+        parsed_docs_payload.append(
+            {
+                "doc_id": result.doc_id,
+                "doc_name": result.doc_name,
+                "pages": pages_payload,
+                "artifact_dir": str(artifact_dir),
+            }
+        )
+
+        doc_entry = doc_chunk_map.setdefault(
+            result.doc_id,
+            {"doc_name": result.doc_name, "chunk_keys": [], "artifact_dir": str(artifact_dir)},
+        )
+
+        for chunk in result.chunks:
+            chunk_id = str(chunk.get("chunk_id") or len(doc_entry["chunk_keys"]))
+            chunk_key = f"{result.doc_id}:{chunk_id}"
+            page_spans = chunk.get("page_spans") or []
+            page_numbers = [span[0] for span in page_spans if span]
+            page_start = min(page_numbers) if page_numbers else 0
+            page_end = max(page_numbers) if page_numbers else page_start
+            section_title = None
+            hints = chunk.get("section_hints") or []
+            if hints:
+                section_title = hints[0]
+            record = {
+                "id": chunk_key,
+                "doc_id": result.doc_id,
+                "doc_name": result.doc_name,
+                "page_start": page_start,
+                "page_end": page_end,
+                "section_title": section_title,
+                "text": chunk.get("text", ""),
+                "token_len": int(chunk.get("tokens_est", 0) or 0),
+                "meta": {
+                    "type": chunk.get("type", "body"),
+                    "neighbors": chunk.get("neighbors", {}),
+                    "table_csv": chunk.get("table_csv"),
+                },
+            }
+            chunk_registry[chunk_key] = record
+            doc_entry["chunk_keys"].append(chunk_key)
+            if chunk.get("type") == "body":
+                chunk_list.append({k: v for k, v in record.items() if k != "section_title"})
+
+        if not any(chunk.get("type") == "body" for chunk in result.chunks):
+            status_lines.append(f"No body chunks generated for {result.doc_name}.")
+
+    if not ingest_results and not chunk_list:
+        raise gr.Error("Parsing failed; check logs for details.")
+
     doc_choices = [
         (entry["doc_name"], doc_id)
         for doc_id, entry in doc_chunk_map.items()
     ]
 
     default_doc = doc_choices[0][1] if doc_choices else None
-    chunk_choices = []
+    chunk_choices: List[tuple[str, str]] = []
     default_chunk_key = None
     default_text = ""
     if default_doc:
         keys = doc_chunk_map[default_doc]["chunk_keys"]
         chunk_choices = [
-            (f"Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}", key)
+            (
+                f"{chunk_registry[key]['meta']['type'].title()} · Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}",
+                key,
+            )
             for key in keys
         ]
         if chunk_choices:
             default_chunk_key = chunk_choices[0][1]
             default_text = chunk_registry[default_chunk_key]["text"]
 
-    # Fingerprint the chunks so retrieval state can lazily rebuild indexes only
-    # when the underlying content changes.
     fingerprint = _fingerprint_chunks(chunk_list)
     state_payload = {
         "chunks": chunk_registry,
         "doc_map": doc_chunk_map,
-        "parse_report": parse_report._asdict(),
-        "chunk_stats": chunk_stats,
         "chunk_list": chunk_list,
         "chunk_fingerprint": fingerprint,
         "parsed_docs": parsed_docs_payload,
+        "ingest_stats": ingest_stats,
     }
 
-    # Surface parser status messages immediately so the operator knows whether
-    # documents were skipped or produced no chunks.
-    if parse_report.message:
-        status_lines.append(parse_report.message)
-    if parse_report.skipped_docs:
-        status_lines.append("Skipped: " + "; ".join(parse_report.skipped_docs))
-    if not chunks:
-        status_lines.append("No chunks generated; document may be empty.")
-    if not status_lines:
-        status_lines.append("Ready.")
+    status_lines.append("Ready.")
 
-    # Materialise optional debug payloads only when explicitly requested to
-    # avoid unnecessary computation during normal runs.
     debug_enabled = _show_debug()
-    debug_payload = None
-    if debug_enabled:
-        combined = _build_debug_payload(docs, parse_report)
-        combined["chunk_stats"] = chunk_stats
-        debug_payload = combined
+    debug_payload = _build_debug_payload(ingest_results) if debug_enabled else None
     debug_update = gr.update(value=debug_payload, visible=debug_enabled)
 
-    # Reset retrieval state so the next query will build fresh indexes aligned
-    # with the new chunks.
     retrieval_state = {"cfg": RETRIEVAL_CFG, "indexes": None, "available": None, "fingerprint": None, "errors": {}}
     engine_dropdown_reset = _engine_dropdown_update(retrieval_state)
     retrieval_debug_reset = gr.update(value=None, visible=debug_enabled)
@@ -511,10 +510,10 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     )
 
 
-def parse_batch_ui(files, mode_label: str, chunk_mode_label: str):
+def parse_batch_ui(files, mode_label: str):
     """UI wrapper returning the expanded set of outputs for Gradio."""
 
-    return parse_batch(files, mode_label, chunk_mode_label, full_output=True)
+    return parse_batch(files, mode_label, full_output=True)
 
 
 def prepare_gold_inputs(state: Dict[str, object]) -> str:
@@ -564,7 +563,10 @@ def update_chunk_selector(selected_doc: str, state: Dict[str, object]):
     entry = doc_map.get(selected_doc, {})
     keys = entry.get("chunk_keys", [])
     chunk_choices = [
-        (f"Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}", key)
+        (
+            f"{chunk_registry[key]['meta']['type'].title()} · Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}",
+            key,
+        )
         for key in keys
     ]
     default_key = chunk_choices[0][1] if chunk_choices else None
@@ -718,7 +720,6 @@ def build_interface() -> gr.Blocks:
     # linearly below.
     mode_choices = _mode_choices()
     default_mode = _default_mode()
-    chunk_mode_choices = list(CHUNK_MODE_LABELS.keys())
     debug_visible = _show_debug()
 
     with gr.Blocks(title="Document Parser Preview") as demo:
@@ -734,12 +735,6 @@ def build_interface() -> gr.Blocks:
                 choices=mode_choices,
                 value=default_mode,
                 label="Parsing mode",
-                allow_custom_value=False,
-            )
-            chunk_mode_input = gr.Dropdown(
-                choices=chunk_mode_choices,
-                value="Semantic (recommended)",
-                label="Chunking mode",
                 allow_custom_value=False,
             )
 
@@ -782,7 +777,7 @@ def build_interface() -> gr.Blocks:
         # debug outputs).
         parse_button.click(
             parse_batch_ui,
-            inputs=[file_input, mode_input, chunk_mode_input],
+            inputs=[file_input, mode_input],
             outputs=[
                 state,
                 doc_selector,

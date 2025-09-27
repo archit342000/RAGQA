@@ -1,0 +1,20 @@
+{
+  "glyph_min_for_text_page": 200,
+  "fast_budget_s": 20,
+  "thorough_budget_s": 40,
+  "max_pages": 500,
+  "table_digit_ratio": 0.4,
+  "chunk_token_target_min": 350,
+  "chunk_token_target_max": 600,
+  "overlap_ratio_min": 0.1,
+  "overlap_ratio_max": 0.15,
+  "noise_drop_ratio": 0.3,
+  "bbox_mode": "line",
+  "kmeans_max_clusters": 2,
+  "junk_char_threshold": 0.3,
+  "caption_anchor_window": 3,
+  "caption_pattern": "^(Fig(ure)?\\.?|Table)\\b",
+  "heading_max_line_length": 90,
+  "list_markers": ["-", "*", "•", "▪", "◦"],
+  "time_budget_mode_threshold": 50
+}
