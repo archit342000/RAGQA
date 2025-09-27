@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from parser import PDFParser, load_config
+from parser.driver import parse_documents
 from parser.config import ParserConfig
 from parser.types import BBox, LineSpan
 
@@ -68,3 +69,11 @@ def test_noise_ratio_ignores_clean_lines() -> None:
     clean = _make_line(1, "Valid text", (0, 20, 10, 30))
     ratio = parser._compute_noise_ratio([noisy, clean])
     assert ratio == pytest.approx(0.5)
+
+
+def test_parse_documents_reports_errors(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.txt"
+    docs, report = parse_documents([str(missing)], mode="fast")
+    assert docs == []
+    assert report.skipped_docs == [str(missing)]
+    assert "Failed to parse" in report.message

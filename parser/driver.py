@@ -79,6 +79,7 @@ def parse_documents(
     cfg = config or DEFAULT_CONFIG
     parsed_docs: List[ParsedDocument] = []
     skipped: List[str] = []
+    errors: List[Tuple[str, str]] = []
     for file in files:
         path = Path(file)
         try:
@@ -88,15 +89,28 @@ def parse_documents(
                 document = parse_text(str(path), doc_id=path.stem, config=cfg)
             parsed_docs.append(document)
         except Exception as exc:  # pragma: no cover - defensive logging
-            log_event("parse_error", file=str(path), error=str(exc))
+            error_text = str(exc)
+            log_event("parse_error", file=str(path), error=error_text)
             skipped.append(str(path))
+            errors.append((path.name or str(path), error_text))
     total_pages = sum(len(doc.pages) for doc in parsed_docs)
+    if errors:
+        if len(errors) == 1:
+            doc_label, err = errors[0]
+            message = f"Failed to parse {doc_label}: {err}"
+        else:
+            doc_label, err = errors[-1]
+            message = (
+                f"Failed to parse {len(errors)} documents. Latest error ({doc_label}): {err}"
+            )
+    else:
+        message = ""
     report = RunReport(
         total_docs=len(parsed_docs),
         total_pages=total_pages,
         truncated=False,
         skipped_docs=skipped,
-        message="",
+        message=message,
     )
     return parsed_docs, report
 

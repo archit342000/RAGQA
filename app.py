@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+from dataclasses import asdict
 from html import escape
 from pathlib import Path
 from typing import Dict, List, MutableMapping, Sequence
@@ -127,7 +128,7 @@ def _build_debug_payload(docs: Sequence[ParsedDocument], report: RunReport) -> D
     # Merge metrics across all documents for a quick high-level view.
     aggregate = merge_doc_stats(list(docs))
     payload: Dict[str, object] = {
-        "run_report": report._asdict(),
+        "run_report": asdict(report),
         "aggregate": aggregate,
         "documents": per_doc,
     }
@@ -391,6 +392,7 @@ def parse_batch(files, mode_label: str, *, full_output: bool = False):
     # Run the parser driver and collect the structured documents plus a run
     # report describing any warnings or skipped files.
     docs, parse_report = parse_documents(file_paths, mode=strategy)
+    report_dict = asdict(parse_report)
 
     # Invoke the chunking pipeline so the retrieval system receives consistent
     # chunk structures.
@@ -494,7 +496,7 @@ def parse_batch(files, mode_label: str, *, full_output: bool = False):
     state_payload = {
         "chunks": chunk_registry,
         "doc_map": doc_chunk_map,
-        "parse_report": parse_report._asdict(),
+        "parse_report": report_dict,
         "chunk_stats": chunk_stats,
         "chunk_list": chunk_list,
         "chunk_fingerprint": fingerprint,
