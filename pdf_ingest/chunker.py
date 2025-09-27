@@ -6,8 +6,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from statistics import median
+
+from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 from .config import Config
 from .pdf_io import Line
@@ -100,38 +102,59 @@ class ChunkBuilder:
         self.last_chunk_id = last_chunk_id
         self.pending: List[Paragraph] = [Paragraph.from_state(p) for p in pending or []]
         self.vectorizer: Optional[TfidfVectorizer] = None
+        self._tfidf_matrix: Optional[csr_matrix] = None
+        self._tfidf_dirty = True
 
     def _new_chunk_id(self) -> str:
         chunk_id = f"{self.next_index:06d}"
         self.next_index += 1
         return chunk_id
 
-    def _build_vectors(self) -> Optional[List[List[float]]]:
+    def _invalidate_vectors(self) -> None:
+        self._tfidf_dirty = True
+        self._tfidf_matrix = None
         if not self.pending:
+            self.vectorizer = None
+
+    def _build_vectors(self) -> Optional[csr_matrix]:
+        if not self.pending:
+            self._tfidf_matrix = None
             return None
+
+        if not self._tfidf_dirty and self._tfidf_matrix is not None and self._tfidf_matrix.shape[0] == len(self.pending):
+            return self._tfidf_matrix
+
         texts = [p.text for p in self.pending]
         try:
-            self.vectorizer = TfidfVectorizer(min_df=1, max_df=0.9)
+            self.vectorizer = TfidfVectorizer(min_df=1, max_df=0.9, norm="l2")
             matrix = self.vectorizer.fit_transform(texts)
-            return matrix.toarray()
+            self._tfidf_matrix = matrix.tocsr()
+            self._tfidf_dirty = False
+            return self._tfidf_matrix
         except ValueError:
+            self._tfidf_matrix = None
             return None
 
     def _boundary_indices(self) -> List[int]:
-        vectors = self._build_vectors()
-        if vectors is None or len(vectors) < 2:
+        matrix = self._build_vectors()
+        if matrix is None or matrix.shape[0] < 2:
             return []
-        sims = cosine_similarity(vectors[:-1], vectors[1:])
-        deltas = [1 - sims[i, i] for i in range(len(self.pending) - 1)]
+        matrix = matrix.tocsr()
+        sims: List[float] = []
+        for row_index in range(matrix.shape[0] - 1):
+            sim = matrix[row_index].multiply(matrix[row_index + 1]).sum()
+            sims.append(float(sim))
+        deltas = [1.0 - sim for sim in sims]
         if not deltas:
             return []
-        median = sorted(deltas)[len(deltas) // 2]
-        mad = sorted(abs(delta - median) for delta in deltas)[len(deltas) // 2]
-        threshold = median + 0.5 * mad
+        med = median(deltas)
+        mad = median([abs(delta - med) for delta in deltas])
+        threshold = med + 0.5 * mad
         return [idx + 1 for idx, delta in enumerate(deltas) if delta >= threshold]
 
     def add_paragraph(self, paragraph: Paragraph) -> List[Chunk]:
         self.pending.append(paragraph)
+        self._tfidf_dirty = True
         return self._emit_ready_chunks()
 
     def _emit_ready_chunks(self) -> List[Chunk]:
@@ -155,6 +178,7 @@ class ChunkBuilder:
             emitted.append(self._make_chunk(self.pending[cursor:end]))
             cursor = self._overlap_cursor(cursor, end)
         self.pending = self.pending[cursor:]
+        self._invalidate_vectors()
         return emitted
 
     def _make_chunk(self, paragraphs: Sequence[Paragraph]) -> Chunk:
@@ -189,6 +213,7 @@ class ChunkBuilder:
         if self.pending:
             emitted.append(self._make_chunk(self.pending))
             self.pending = []
+        self._invalidate_vectors()
         return emitted
 
     def state_payload(self) -> Dict[str, object]:
