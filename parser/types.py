@@ -1,43 +1,99 @@
-"""Typed structures for parsed documents."""
-
-# These NamedTuples act as the public contract for parser outputs
-# and are shared between the core parsing logic, tests, and the UI layer.
-
+"""Type definitions for the CPU-first parser."""
 from __future__ import annotations
 
-from typing import Dict, List, NamedTuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence, Tuple
 
 
-class ParsedPage(NamedTuple):
-    """Represents one page extracted from a document."""
+@dataclass
+class BBox:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
 
-    doc_id: str
-    page_num: int
+    def as_list(self) -> List[float]:
+        return [float(self.x0), float(self.y0), float(self.x1), float(self.y1)]
+
+
+@dataclass
+class LineSpan:
+    """Represents a line of text extracted from a PDF page."""
+
+    page_index: int
+    line_index: int
     text: str
-    char_range: tuple[int, int]
-    metadata: Dict[str, str]
+    bbox: Optional[BBox]
+    char_start: int
+    char_end: int
+    is_caption: bool = False
+    is_footnote: bool = False
+    is_heading: bool = False
+    is_list_item: bool = False
+
+    def cleaned_text(self) -> str:
+        return self.text.strip()
 
 
-class ParsedDoc(NamedTuple):
-    """Represents an entire parsed document."""
+@dataclass
+class CaptionSidecar:
+    page_index: int
+    anchor_line: int
+    text: str
+    bbox: Optional[BBox]
 
+
+@dataclass
+class TableExtraction:
+    page_index: int
+    csv_path: Optional[str]
+    rows: int
+    cols: int
+    confidence: float
+    skipped_reason: Optional[str] = None
+
+
+@dataclass
+class PageParseResult:
+    page_index: int
+    glyph_count: int
+    had_text: bool
+    ocr_performed: bool
+    lines: List[LineSpan] = field(default_factory=list)
+    captions: List[CaptionSidecar] = field(default_factory=list)
+    tables: List[TableExtraction] = field(default_factory=list)
+    noise_ratio: float = 0.0
+
+
+@dataclass
+class ParsedDocument:
     doc_id: str
-    pages: list[ParsedPage]
-    total_chars: int
-    parser_used: str
-    stats: Dict[str, float]
+    file_path: str
+    pages: List[PageParseResult]
+    config_used: dict
+    parse_time_s: float
+    content_hash: str
+
+    def all_lines(self) -> Sequence[LineSpan]:
+        for page in self.pages:
+            for line in page.lines:
+                yield line
+
+    def caption_lines(self) -> Sequence[CaptionSidecar]:
+        for page in self.pages:
+            for caption in page.captions:
+                yield caption
+
+    def stats_summary(self) -> Tuple[int, int]:
+        lines_total = sum(len(page.lines) for page in self.pages)
+        captions_total = sum(len(page.captions) for page in self.pages)
+        return lines_total, captions_total
 
 
-class RunReport(NamedTuple):
-    """Aggregate metadata for a multi-document parsing run.
-
-    ``RunReport`` powers the UI banner that informs users when documents were
-    skipped or truncated and helps developers understand how much work the
-    parser performed.
-    """
-
+@dataclass
+class RunReport:
     total_docs: int
     total_pages: int
     truncated: bool
     skipped_docs: List[str]
-    message: str
+    message: str = ""

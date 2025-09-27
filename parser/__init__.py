@@ -1,11 +1,25 @@
-"""Parser package entrypoints."""
+"""CPU-first PDF parsing utilities for RAGQA."""
 
-from .driver import parse_pdf, parse_text
-from .types import ParsedDoc, ParsedPage
+from .config import DEFAULT_CONFIG, ParserConfig, load_config
+from .pdf_parser import PDFParser
+from .types import (
+    CaptionSidecar,
+    LineSpan,
+    PageParseResult,
+    ParsedDocument,
+    RunReport,
+    TableExtraction,
+)
 
 __all__ = [
-    "parse_pdf",
-    "parse_text",
-    "ParsedDoc",
-    "ParsedPage",
+    "DEFAULT_CONFIG",
+    "ParserConfig",
+    "load_config",
+    "PDFParser",
+    "CaptionSidecar",
+    "LineSpan",
+    "PageParseResult",
+    "ParsedDocument",
+    "RunReport",
+    "TableExtraction",
 ]

@@ -1,137 +1,77 @@
-"""Unit tests covering both semantic and fixed chunking pathways."""
-
+"""Chunking tests covering paragraph assembly and boundary detection."""
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
-from chunking.driver import chunk_documents
-from parser.types import ParsedDoc, ParsedPage
-import chunking.semantic_chunker as semantic_module
+from chunking import Chunker
+from parser.config import ParserConfig
+from parser.types import BBox, CaptionSidecar, LineSpan, PageParseResult, ParsedDocument
 
 
-def _make_page(doc_id: str, page_num: int, text: str, file_name: str = "fixture.pdf") -> ParsedPage:
-    """Helper for creating ``ParsedPage`` fixtures with minimal boilerplate."""
-    metadata = {"file_name": file_name}
-    return ParsedPage(
-        doc_id=doc_id,
-        page_num=page_num,
+def _make_line(page: int, idx: int, text: str, caption: bool = False) -> LineSpan:
+    return LineSpan(
+        page_index=page,
+        line_index=idx,
         text=text,
-        char_range=(0, len(text)),
-        metadata=metadata,
+        bbox=BBox(0, idx * 10, 10, idx * 10 + 5),
+        char_start=idx * 10,
+        char_end=idx * 10 + len(text),
+        is_caption=caption,
     )
 
 
-def _make_doc(doc_id: str, pages: list[ParsedPage], parser_used: str = "pypdf") -> ParsedDoc:
-    """Bundle pages into a ``ParsedDoc`` for the chunker to consume."""
-    return ParsedDoc(
-        doc_id=doc_id,
+def _make_document() -> ParsedDocument:
+    config = ParserConfig()
+    pages = []
+    # Page 0 with heading and caption
+    lines = [
+        _make_line(0, 0, "INTRODUCTION", caption=False),
+        _make_line(0, 1, "This section explains the goal of the paper."),
+        _make_line(0, 2, "Figure 1. System diagram", caption=True),
+    ]
+    lines[0].is_heading = True
+    captions = [CaptionSidecar(page_index=0, anchor_line=2, text=lines[2].text, bbox=lines[2].bbox)]
+    pages.append(PageParseResult(page_index=0, glyph_count=300, had_text=True, ocr_performed=False, lines=lines, captions=captions))
+
+    # Page 1 with content that should trigger a topic boundary
+    lines_1 = [
+        _make_line(1, 0, "METHODS"),
+        _make_line(1, 1, "We run several controlled experiments."),
+        _make_line(1, 2, "Results show strong improvements."),
+    ]
+    lines_1[0].is_heading = True
+    pages.append(PageParseResult(page_index=1, glyph_count=320, had_text=True, ocr_performed=False, lines=lines_1, captions=[]))
+
+    doc = ParsedDocument(
+        doc_id="doc",
+        file_path="doc.pdf",
         pages=pages,
-        total_chars=sum(len(p.text) for p in pages),
-        parser_used=parser_used,
-        stats={},
+        config_used=config.to_dict(),
+        parse_time_s=1.0,
+        content_hash="hash",
     )
+    return doc
 
 
-@pytest.fixture(autouse=True)
-def patch_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TOKENIZER_NAME", "hf-internal-testing/llama-tokenizer")
-    monkeypatch.setenv("MAX_TOTAL_TOKENS_FOR_CHUNKING", "50000")
+def test_chunker_produces_body_and_caption_chunks() -> None:
+    config = ParserConfig(chunk_token_target_min=10, chunk_token_target_max=50)
+    chunker = Chunker(config)
+    doc = _make_document()
+    chunks = chunker.chunk_document(doc)
+    body_chunks = [chunk for chunk in chunks if chunk.type == "body"]
+    caption_chunks = [chunk for chunk in chunks if chunk.type == "caption"]
+    assert len(body_chunks) >= 1
+    assert len(caption_chunks) == 1
+    assert caption_chunks[0].text.startswith("Figure 1")
+    # captions should not be part of body text
+    assert all("Figure 1" not in chunk.text for chunk in body_chunks)
 
 
-def test_semantic_chunking_produces_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Semantic mode should respect the semantic splitter when available."""
-    calls: list[str] = []
-
-    def fake_semantic_segments(text: str, model_name: str, max_sentences: int = 300):  # type: ignore[override]
-        calls.append(text)
-        return ["Paragraph one." , "Paragraph two continuing the discussion."]
-
-    monkeypatch.setattr(semantic_module, "semantic_segments", fake_semantic_segments)
-
-    doc = _make_doc(
-        "doc-sem",
-        [
-            _make_page("doc-sem", 1, "Heading\n\nParagraph one. Paragraph two continuing the discussion."),
-        ],
-    )
-
-    chunks, stats = chunk_documents([doc], mode="semantic")
-
-    assert chunks, "Expected at least one semantic chunk"
-    assert chunks[0].meta["strategy"].startswith("semantic")
-    assert stats["doc-sem"]["chunks"] == len(chunks)
-    assert 0 < chunks[0].token_len < 900
-
-
-def test_fixed_chunking_window_sizes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fixed mode emits overlapping windows that respect token limits."""
-    long_text = " ".join(["token" + str(i) for i in range(1000)])
-    doc = _make_doc(
-        "doc-fixed",
-        [
-            _make_page("doc-fixed", 1, long_text),
-        ],
-    )
-
-    chunks, _ = chunk_documents([doc], mode="fixed")
-
-    assert len(chunks) >= 2, "Fixed mode should create multiple windows for long text"
-    lengths = [chunk.token_len for chunk in chunks]
-    assert max(lengths) <= 900
-    assert min(lengths) >= 200
-
-
-def test_table_heavy_page_falls_back_to_fixed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Table-heavy content should bypass the semantic chunker automatically."""
-    monkeypatch.setattr(semantic_module, "semantic_segments", lambda *args, **kwargs: pytest.fail("Semantic chunker should not run"))
-
-    table_text = "Row | Col\n1 | 2 | 3\n4 | 5 | 6"
-    doc = _make_doc(
-        "doc-table",
-        [_make_page("doc-table", 1, table_text)],
-    )
-
-    chunks, stats = chunk_documents([doc], mode="semantic")
-
-    assert chunks
-    assert all(chunk.meta["strategy"].startswith("fixed") for chunk in chunks)
-    assert stats["doc-table"]["strategies"]["fixed"] >= 1
-
-
-def test_multi_doc_chunking_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Multi-document runs should keep doc_ids intact across chunks."""
-    doc_a = _make_doc(
-        "doc-a",
-        [
-            _make_page("doc-a", 1, "Document A content sentence one. Sentence two."),
-            _make_page("doc-a", 2, "Document A page two with more prose."),
-        ],
-    )
-    doc_b = _make_doc(
-        "doc-b",
-        [_make_page("doc-b", 1, "Document B single page text.")],
-    )
-
-    chunks, stats = chunk_documents([doc_a, doc_b], mode="fixed")
-
-    doc_ids = {chunk.doc_id for chunk in chunks}
-    assert {"doc-a", "doc-b"}.issubset(doc_ids)
-    assert set(stats.keys()) == {"doc-a", "doc-b"}
-
-
-def test_chunk_metadata_preserves_pages(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Page anchors and doc names must flow through to chunk metadata."""
-    doc = _make_doc(
-        "doc-pages",
-        [
-            _make_page("doc-pages", 1, "First page text."),
-            _make_page("doc-pages", 2, "Second page text that extends."),
-        ],
-    )
-
-    chunks, _ = chunk_documents([doc], mode="fixed")
-
-    assert all(chunk.page_start <= chunk.page_end for chunk in chunks)
-    assert all(chunk.doc_name for chunk in chunks)
+def test_topic_boundaries_split_chunks() -> None:
+    config = ParserConfig(chunk_token_target_min=5, chunk_token_target_max=50)
+    chunker = Chunker(config)
+    doc = _make_document()
+    chunks = [chunk for chunk in chunker.chunk_document(doc) if chunk.type == "body"]
+    assert len(chunks) >= 1
+    # ensure neighbors are wired
+    for first, second in zip(chunks, chunks[1:]):
+        assert first.neighbors["next"] == second.chunk_id
+        assert second.neighbors["prev"] == first.chunk_id

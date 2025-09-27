@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/chunks.schema.json",
+  "title": "ChunkRecord",
+  "type": "object",
+  "required": [
+    "doc_id",
+    "chunk_id",
+    "type",
+    "text",
+    "tokens_est",
+    "page_spans",
+    "section_hints",
+    "neighbors",
+    "table_csv",
+    "evidence_offsets",
+    "provenance"
+  ],
+  "properties": {
+    "doc_id": {"type": "string"},
+    "chunk_id": {"type": "string"},
+    "type": {"enum": ["body", "table", "caption", "footnote"]},
+    "text": {"type": "string"},
+    "tokens_est": {"type": "integer", "minimum": 0},
+    "page_spans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "page": {"type": "integer", "minimum": 0},
+          "span": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "minItems": 1
+          },
+          "bbox": {
+            "type": ["array", "null"],
+            "items": {"type": "number"},
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "required": ["page", "span"]
+      }
+    },
+    "section_hints": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "neighbors": {
+      "type": "object",
+      "properties": {
+        "prev": {"type": ["string", "null"]},
+        "next": {"type": ["string", "null"]}
+      },
+      "required": ["prev", "next"]
+    },
+    "table_csv": {"type": ["string", "null"]},
+    "evidence_offsets": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "byte_range": {"type": ["array", "null"], "items": {"type": "integer"}},
+        "hash": {"type": ["string", "null"]}
+      },
+      "required": ["byte_range", "hash"]
+    }
+  }
+}
