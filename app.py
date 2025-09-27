@@ -164,6 +164,48 @@ def _fingerprint_chunks(chunks: Sequence[MutableMapping[str, object]]) -> str:
     return digest.hexdigest()
 
 
+def _chunk_label(chunk_record: Dict[str, object]) -> str:
+    """Build a human-readable label for a chunk selector option."""
+
+    chunk_type = str(chunk_record.get("chunk_type") or chunk_record.get("meta", {}).get("type") or "body")
+    chunk_type_label = chunk_type.capitalize()
+    page_start = int(chunk_record.get("page_start") or 0)
+    page_end = int(chunk_record.get("page_end") or 0)
+    if page_start and page_end:
+        if page_start == page_end:
+            page_label = f"Page {page_start}"
+        else:
+            page_label = f"Pages {page_start}-{page_end}"
+    else:
+        page_label = "Pages"
+    section = chunk_record.get("section_title")
+    if section:
+        return f"{chunk_type_label} · {section} ({page_label})"
+    return f"{chunk_type_label} · {page_label}"
+
+
+def _chunk_metadata_for_display(chunk_record: Dict[str, object]) -> Dict[str, object]:
+    """Return a lightweight metadata dictionary for the inspector panel."""
+
+    meta = dict(chunk_record.get("meta") or {})
+    section_hints = list(meta.get("section_hints") or [])
+    section_title = chunk_record.get("section_title")
+    if section_title and section_title not in section_hints:
+        section_hints.append(section_title)
+    display: Dict[str, object] = {
+        "chunk_id": chunk_record.get("chunk_id") or meta.get("chunk_id") or chunk_record.get("id"),
+        "type": chunk_record.get("chunk_type") or meta.get("type"),
+        "section_hints": section_hints,
+        "page_spans": meta.get("page_spans"),
+        "tokens_est": meta.get("tokens_est") or chunk_record.get("token_len"),
+        "neighbors": meta.get("neighbors"),
+        "table_csv": meta.get("table_csv"),
+        "evidence_offsets": meta.get("evidence_offsets"),
+        "provenance": meta.get("provenance"),
+    }
+    return {k: v for k, v in display.items() if v not in (None, [], {})}
+
+
 def _available_engines(index_map: Dict[str, object]) -> set[str]:
     """Return the set of retrieval engines that are safe to expose."""
 
@@ -407,27 +449,41 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     chunk_list: List[Dict[str, object]] = []
 
     for index, chunk in enumerate(chunks):
-        chunk_key = f"{chunk.doc_id}:{index}"
+        chunk_id = str(chunk.meta.get("chunk_id") or f"{chunk.doc_id}::legacy_{index:04d}")
         record = {
-            "id": chunk_key,
+            "id": chunk_id,
+            "chunk_id": chunk_id,
             "doc_id": chunk.doc_id,
             "doc_name": chunk.doc_name,
             "page_start": chunk.page_start,
             "page_end": chunk.page_end,
             "section_title": chunk.section_title,
+            "chunk_type": chunk.chunk_type,
             "text": chunk.text,
             "token_len": chunk.token_len,
             "meta": chunk.meta,
         }
-        # Store a retrieval-friendly copy (without the optional section title)
-        # so we can rebuild indexes quickly.
-        chunk_list.append({k: v for k, v in record.items() if k != "section_title"})
-        chunk_registry[chunk_key] = record
+        record["display_meta"] = _chunk_metadata_for_display(record)
+        # Store a retrieval-friendly copy so we can rebuild indexes quickly.
+        chunk_list.append(
+            {
+                "id": record["id"],
+                "doc_id": record["doc_id"],
+                "doc_name": record["doc_name"],
+                "page_start": record["page_start"],
+                "page_end": record["page_end"],
+                "text": record["text"],
+                "token_len": record["token_len"],
+                "meta": record["meta"],
+                "chunk_type": record["chunk_type"],
+            }
+        )
+        chunk_registry[chunk_id] = record
         entry = doc_chunk_map.setdefault(
             chunk.doc_id,
             {"doc_name": chunk.doc_name, "chunk_keys": []},
         )
-        entry["chunk_keys"].append(chunk_key)
+        entry["chunk_keys"].append(chunk_id)
 
     # Build dropdown choices for documents and their chunks so the inspector can
     # present the first available entry by default.
@@ -440,15 +496,19 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
     chunk_choices = []
     default_chunk_key = None
     default_text = ""
+    default_meta: Dict[str, object] = {}
     if default_doc:
         keys = doc_chunk_map[default_doc]["chunk_keys"]
         chunk_choices = [
-            (f"Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}", key)
+            (_chunk_label(chunk_registry[key]), key)
             for key in keys
         ]
         if chunk_choices:
             default_chunk_key = chunk_choices[0][1]
             default_text = chunk_registry[default_chunk_key]["text"]
+            default_meta = chunk_registry[default_chunk_key]["display_meta"]
+    if default_chunk_key is None:
+        default_meta = {}
 
     # Fingerprint the chunks so retrieval state can lazily rebuild indexes only
     # when the underlying content changes.
@@ -496,6 +556,7 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
         gr.update(choices=doc_choices, value=default_doc or None),
         gr.update(choices=chunk_choices, value=default_chunk_key or None),
         default_text,
+        default_meta,
         "\n".join(status_lines),
         debug_update,
     )
@@ -559,33 +620,34 @@ def update_chunk_selector(selected_doc: str, state: Dict[str, object]):
 
     # Guard against missing state when the user clears uploads or switches tabs.
     if not selected_doc or not state:
-        return gr.update(choices=[], value=None), ""
+        return gr.update(choices=[], value=None), "", {}
 
     doc_map = state.get("doc_map", {})
     chunk_registry = state.get("chunks", {})
     entry = doc_map.get(selected_doc, {})
     keys = entry.get("chunk_keys", [])
     chunk_choices = [
-        (f"Pages {chunk_registry[key]['page_start']}-{chunk_registry[key]['page_end']}", key)
+        (_chunk_label(chunk_registry[key]), key)
         for key in keys
     ]
     default_key = chunk_choices[0][1] if chunk_choices else None
     default_text = chunk_registry[default_key]["text"] if default_key else ""
-    return gr.update(choices=chunk_choices, value=default_key), default_text
+    default_meta = chunk_registry[default_key].get("display_meta") if default_key else {}
+    return gr.update(choices=chunk_choices, value=default_key), default_text, default_meta
 
 
 def show_chunk(selected_chunk: str, state: Dict[str, object]):
-    """Return the full chunk text for the viewer component."""
+    """Return the full chunk text and metadata for the viewer component."""
 
     # The inspector simply displays the stored chunk text. Missing keys are
     # tolerated so the UI does not crash if state desynchronises.
     if not selected_chunk or not state:
-        return ""
+        return "", {}
     chunk_registry = state.get("chunks", {})
     chunk = chunk_registry.get(selected_chunk)
     if not chunk:
-        return ""
-    return chunk["text"]
+        return "", {}
+    return chunk["text"], chunk.get("display_meta") or chunk.get("meta") or {}
 
 
 def run_retrieval(query: str, engine_label: str, app_state: Dict[str, object], retrieval_state: Dict[str, object]):
@@ -756,6 +818,7 @@ def build_interface() -> gr.Blocks:
         doc_selector = gr.Dropdown(label="Document", choices=[])
         chunk_selector = gr.Dropdown(label="Chunk", choices=[])
         chunk_text = gr.Textbox(label="Chunk text", lines=20)
+        chunk_meta = gr.JSON(label="Chunk metadata", value={})
         status = gr.Markdown()
         debug_output = gr.JSON(label="Debug", visible=debug_visible)
 
@@ -790,6 +853,7 @@ def build_interface() -> gr.Blocks:
                 doc_selector,
                 chunk_selector,
                 chunk_text,
+                chunk_meta,
                 status,
                 debug_output,
                 retrieval_state,
@@ -804,8 +868,8 @@ def build_interface() -> gr.Blocks:
 
         # Keep the chunk preview in sync when the operator selects a different
         # document or chunk from the inspector dropdowns.
-        doc_selector.change(update_chunk_selector, inputs=[doc_selector, state], outputs=[chunk_selector, chunk_text])
-        chunk_selector.change(show_chunk, inputs=[chunk_selector, state], outputs=chunk_text)
+        doc_selector.change(update_chunk_selector, inputs=[doc_selector, state], outputs=[chunk_selector, chunk_text, chunk_meta])
+        chunk_selector.change(show_chunk, inputs=[chunk_selector, state], outputs=[chunk_text, chunk_meta])
 
         # Attach retrieval actions to their respective buttons so the UI updates
         # the answer preview, full chunk list, and diagnostic panes in one go.

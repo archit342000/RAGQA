@@ -30,6 +30,7 @@ class LegacyChunk:
     section_title: str | None
     text: str
     token_len: int
+    chunk_type: str
     meta: Dict[str, object]
 
 
@@ -46,11 +47,26 @@ def _section_hint(record: ChunkRecord) -> str | None:
     return record.section_hints[0] if record.section_hints else None
 
 
+def _normalise_page_spans(spans: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    normalised: List[Dict[str, object]] = []
+    for span in spans:
+        entry = dict(span)
+        page = entry.get("page")
+        if isinstance(page, int):
+            entry["page"] = page + 1
+        line_span = entry.get("span")
+        if isinstance(line_span, list):
+            entry["span"] = [idx + 1 for idx in line_span]
+        normalised.append(entry)
+    return normalised
+
+
 def _chunk_meta(record: ChunkRecord) -> Dict[str, object]:
     return {
         "chunk_id": record.chunk_id,
         "type": record.type,
-        "page_spans": record.page_spans,
+        "tokens_est": record.tokens_est,
+        "page_spans": _normalise_page_spans(record.page_spans),
         "section_hints": record.section_hints,
         "neighbors": record.neighbors,
         "table_csv": record.table_csv,
@@ -106,6 +122,7 @@ def chunk_documents(
                 section_title=_section_hint(record),
                 text=record.text,
                 token_len=record.tokens_est,
+                chunk_type=record.type,
                 meta=_chunk_meta(record),
             )
             chunks.append(legacy)
