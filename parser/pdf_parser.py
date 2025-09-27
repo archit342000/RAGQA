@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-import fitz
 import numpy as np
 from sklearn.cluster import KMeans
 
 from .config import ParserConfig
+from ._fitz import fitz
 from .logging_utils import log_event
 from .ocr import OCRTimeout, perform_page_ocr
 from .table_extractor import detect_table_candidates, export_table

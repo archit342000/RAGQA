@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-import fitz
+from ._fitz import fitz
 
 try:
     import pytesseract
