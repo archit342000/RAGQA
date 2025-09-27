@@ -47,7 +47,8 @@
         "tables_emitted": {"type": "integer", "minimum": 0},
         "captions_extracted": {"type": "integer", "minimum": 0},
         "skipped_tables": {"type": "integer", "minimum": 0},
-        "noise_dropped": {"type": "integer", "minimum": 0}
+        "noise_dropped": {"type": "integer", "minimum": 0},
+        "tsv_empty_alerts": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": false
     },
@@ -55,7 +56,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["index", "status", "ocr_mode", "chunks_emitted", "tables_emitted", "notes"],
+        "required": ["index", "status", "ocr_mode", "chunks_emitted", "tables_emitted", "notes", "dpi_used", "tsv_lines", "alerts"],
         "properties": {
           "index": {"type": "integer", "minimum": 0},
           "status": {"enum": ["pending", "processing", "done"]},
@@ -69,6 +70,12 @@
             "items": {"type": "string"}
           },
           "notes": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "dpi_used": {"type": ["integer", "null"], "minimum": 0},
+          "tsv_lines": {"type": "integer", "minimum": 0},
+          "alerts": {
             "type": "array",
             "items": {"type": "string"}
           }

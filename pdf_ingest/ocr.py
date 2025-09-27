@@ -1,18 +1,17 @@
-"""OCR heuristics and helpers."""
+"""OCR heuristics and Tesseract orchestration."""
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import List, Sequence
 
+import fitz  # type: ignore
 import pytesseract
-from PIL import Image
 
 from .config import Config
-from .pdf_io import Line, PageSignals
+from .pdf_io import PageSignals
 
 
 @dataclass
@@ -30,10 +29,9 @@ def classify_pages(signals: Sequence[PageSignals], config: Config) -> List[OCRDe
         noisy_unicode = signal.unicode_ratio < 0.75
         suspect_fonts = not signal.has_fonts
         heavy_images = signal.image_coverage > 0.35
-        dpi_poor = signal.dpi < config.bad_dpi
         if signal.hidden_text_layer:
             mode = "none"
-        elif low_text and (heavy_images or dpi_poor):
+        elif low_text and heavy_images:
             mode = "full"
         elif low_text or bad_density or noisy_unicode or suspect_fonts:
             mode = "partial"
@@ -49,28 +47,34 @@ def classify_pages(signals: Sequence[PageSignals], config: Config) -> List[OCRDe
     return decisions
 
 
-def run_ocrmypdf(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ocrmypdf",
-        "--skip-text",
-        "--optimize",
-        "0",
-        str(source),
-        str(destination),
-    ]
-    subprocess.run(cmd, check=True)
-
-
-def pytesseract_page_image(page) -> List[str]:  # type: ignore[no-untyped-def]
-    pix = page.get_pixmap()
+def render_page_to_image(page: fitz.Page, dpi: int) -> tuple[Path, int, int]:
+    matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+    pix = page.get_pixmap(matrix=matrix, alpha=False)
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
-        handle.write(pix.tobytes())
-        temp_path = Path(handle.name)
-    try:
-        image = Image.open(temp_path)
-        text = pytesseract.image_to_string(image)
-    finally:
-        temp_path.unlink(missing_ok=True)
-    return [line.strip() for line in text.splitlines() if line.strip()]
+        image_path = Path(handle.name)
+        pix.save(handle.name)
+    return image_path, pix.width, pix.height
 
+
+def run_tesseract_tsv(image_path: Path, *, dpi: int, lang: str | None = None) -> Path:
+    output_base = image_path.with_suffix("")
+    pytesseract.run_tesseract(
+        str(image_path),
+        str(output_base),
+        extension="tsv",
+        lang=lang,
+        config=f"--dpi {dpi} --psm 6",
+    )
+    return output_base.with_suffix(".tsv")
+
+
+def run_tesseract_hocr(image_path: Path, *, dpi: int, lang: str | None = None) -> Path:
+    output_base = image_path.with_suffix("")
+    pytesseract.run_tesseract(
+        str(image_path),
+        str(output_base),
+        extension="hocr",
+        lang=lang,
+        config=f"--dpi {dpi} --psm 6",
+    )
+    return output_base.with_suffix(".hocr")

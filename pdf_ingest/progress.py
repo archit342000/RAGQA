@@ -23,6 +23,9 @@ class PageProgress:
     chunks_emitted: List[str] = field(default_factory=list)
     tables_emitted: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    dpi_used: int | None = None
+    tsv_lines: int = 0
+    alerts: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -32,6 +35,9 @@ class PageProgress:
             "chunks_emitted": list(self.chunks_emitted),
             "tables_emitted": list(self.tables_emitted),
             "notes": list(self.notes),
+            "dpi_used": self.dpi_used,
+            "tsv_lines": self.tsv_lines,
+            "alerts": list(self.alerts),
         }
 
 
@@ -53,6 +59,7 @@ class ProgressState:
         "captions_extracted": 0,
         "skipped_tables": 0,
         "noise_dropped": 0,
+        "tsv_empty_alerts": 0,
     })
     pages: List[PageProgress] = field(default_factory=list)
 
@@ -109,6 +116,9 @@ class ProgressTracker:
             page.chunks_emitted = list(payload.get("chunks_emitted", []))
             page.tables_emitted = list(payload.get("tables_emitted", []))
             page.notes = list(payload.get("notes", []))
+            page.dpi_used = payload.get("dpi_used")
+            page.tsv_lines = int(payload.get("tsv_lines", 0))
+            page.alerts = list(payload.get("alerts", []))
             pages.append(page)
         if not pages:
             self._initialise_pages(self.state.pages_total)
@@ -122,6 +132,10 @@ class ProgressTracker:
         page = self.state.pages[index]
         page.status = "processing"
         page.ocr_mode = ocr_mode
+        page.notes = []
+        page.dpi_used = None
+        page.tsv_lines = 0
+        page.alerts = []
         self.flush()
 
     def page_completed(
@@ -134,6 +148,9 @@ class ProgressTracker:
         counters: Optional[Dict[str, Any]] = None,
         pending_paragraphs: Optional[List[Dict[str, Any]]] = None,
         last_chunk_id: Optional[str] = None,
+        dpi_used: Optional[int] = None,
+        tsv_lines: int = 0,
+        alerts: Optional[List[str]] = None,
     ) -> None:
         page = self.state.pages[index]
         page.status = "done"
@@ -141,6 +158,11 @@ class ProgressTracker:
         page.tables_emitted = list(tables)
         if notes:
             page.notes = list(notes)
+        if alerts:
+            page.alerts = list(alerts)
+        if dpi_used is not None:
+            page.dpi_used = dpi_used
+        page.tsv_lines = tsv_lines
         if counters:
             self.state.counters.update(counters)
         if pending_paragraphs is not None:

@@ -10,7 +10,8 @@
     "chunks_n",
     "avg_tokens",
     "noise_ratio",
-    "skipped_tables_n"
+    "skipped_tables_n",
+    "tsv_empty_alerts"
   ],
   "properties": {
     "parse_time_s": {"type": "number", "minimum": 0},
@@ -20,6 +21,7 @@
     "chunks_n": {"type": "integer", "minimum": 0},
     "avg_tokens": {"type": "number", "minimum": 0},
     "noise_ratio": {"type": "number", "minimum": 0, "maximum": 1},
-    "skipped_tables_n": {"type": "integer", "minimum": 0}
+    "skipped_tables_n": {"type": "integer", "minimum": 0},
+    "tsv_empty_alerts": {"type": "integer", "minimum": 0}
   }
 }

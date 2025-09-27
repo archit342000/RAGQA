@@ -16,6 +16,8 @@ class Line:
     text: str
     bbox: Tuple[float, float, float, float] | None
     x_center: float | None
+    source: str = "native"
+    confidence: float | None = None
 
 
 @dataclass
@@ -73,6 +75,8 @@ def collect_page_lines(page: fitz.Page) -> Tuple[List[Line], int]:
                         text=content.strip(),
                         bbox=bbox if bbox != (0.0, 0.0, 0.0, 0.0) else None,
                         x_center=x_center,
+                        source="native",
+                        confidence=1.0,
                     )
                 )
                 line_index += 1

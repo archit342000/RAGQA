@@ -12,12 +12,13 @@ _DEFAULTS: Dict[str, str] = {
     "glyph_min_for_text_page": "200",
     "table_digit_ratio": ">=0.4",
     "table_score_conf": ">=0.6",
-    "bad_dpi": "<150",
     "chunk_tokens": "350..600",
     "overlap": "0.1..0.15",
     "ocr_retry": "1",
     "rasterizations_per_page": "<=2",
     "junk_char_ratio": ">0.3",
+    "dpi_full": "300",
+    "dpi_retry": "400",
 }
 
 
@@ -28,7 +29,6 @@ class Config:
     glyph_min_for_text_page: int = int(_DEFAULTS["glyph_min_for_text_page"])
     table_digit_ratio: float = float(_DEFAULTS["table_digit_ratio"][2:])
     table_score_conf: float = float(_DEFAULTS["table_score_conf"][2:])
-    bad_dpi: int = int(_DEFAULTS["bad_dpi"][1:])
     chunk_tokens_min: int = int(_DEFAULTS["chunk_tokens"].split("..", 1)[0])
     chunk_tokens_max: int = int(_DEFAULTS["chunk_tokens"].split("..", 1)[1])
     overlap_min: float = float(_DEFAULTS["overlap"].split("..", 1)[0])
@@ -36,6 +36,8 @@ class Config:
     ocr_retry: int = int(_DEFAULTS["ocr_retry"])
     rasterizations_per_page: int = int(_DEFAULTS["rasterizations_per_page"].split("<=", 1)[1])
     junk_char_ratio: float = float(_DEFAULTS["junk_char_ratio"][1:])
+    dpi_full: int = int(_DEFAULTS["dpi_full"])
+    dpi_retry: int = int(_DEFAULTS["dpi_retry"])
     bbox_mode: str = "line"
     mode: str = "fast"
     max_pages: int = 500
@@ -78,6 +80,10 @@ class Config:
             raise ValueError("bbox_mode must be 'line' or 'band'")
         if self.mode not in {"fast", "thorough"}:
             raise ValueError("mode must be fast or thorough")
+        if self.dpi_full <= 0 or self.dpi_retry <= 0:
+            raise ValueError("dpi values must be positive")
+        if self.dpi_retry < self.dpi_full:
+            raise ValueError("dpi_retry must be >= dpi_full")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

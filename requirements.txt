@@ -1,6 +1,5 @@
 PyMuPDF==1.26.4
 pdfplumber==0.11.4
-ocrmypdf==16.4.1
 pytesseract==0.3.13
 Pillow==10.4.0
 nltk==3.9.1

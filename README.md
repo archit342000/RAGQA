@@ -12,8 +12,9 @@ metadata.
 - **Per-operation caps** – no global timeout; rasterisations/page, OCR retries,
   and table probes are bounded to keep latency predictable.
 - **Selective OCR** – multi-signal heuristics choose `none|partial|full` per
-  page with neighbour smoothing and a single retry, preferring OCRmyPDF for
-  full-text fallbacks.
+  page with neighbour smoothing and a single retry. When native text is
+  missing, pages/ROIs are rasterised (≤2×) and fed through Tesseract TSV (hOCR
+  fallback) so the pipeline stays text-only and resume-safe.
 - **Balanced chunking** – paragraphs rebuilt from lines, TF–IDF cosine drops
   determine topic boundaries, chunks target 350–600 tokens with 10–15% overlap
   only at strong boundaries, and captions/footnotes are routed to sidecars.
@@ -35,12 +36,15 @@ stats.json
 /tables/*.csv
 ```
 
+`stats.json` captures `parse_time_s`, `lines_total`, `tables_emitted`, `captions_extracted`, `chunks_n`, `avg_tokens`,
+`noise_ratio`, `skipped_tables_n`, and `tsv_empty_alerts` for troubleshooting OCR coverage.
+
 ## Installation
 
 System packages for OCR (Ubuntu/Debian):
 
 ```bash
-sudo apt-get update && sudo apt-get install -y tesseract-ocr qpdf ghostscript
+sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
 ```
 
 Python dependencies:
@@ -81,12 +85,13 @@ Authoritative defaults from `pdf_ingest.config`:
 glyph_min_for_text_page=200
 table_digit_ratio>=0.4
 table_score_conf>=0.6
-bad_dpi<150
 chunk_tokens=350..600
 overlap=0.1..0.15
 ocr_retry=1
 rasterizations_per_page<=2
 junk_char_ratio>0.3
+dpi_full=300
+dpi_retry=400
 ```
 
 Resolved configuration (after merging overrides) is written to `config_used.json`.
