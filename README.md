@@ -39,7 +39,7 @@ python -m nltk.downloader punkt
 ## CLI Usage
 
 ```bash
-python -m pdf_ingest.cli parse_and_chunk input.pdf --outdir out/doc --mode fast
+python -m pdf_ingest.cli input.pdf --outdir out/doc --mode fast
 ```
 
 Optional flags:
