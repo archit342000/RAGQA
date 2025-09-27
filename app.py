@@ -29,11 +29,11 @@ from typing import Dict, List, MutableMapping, Sequence
 
 import gradio as gr
 
-from chunking import chunk_documents
+from chunking import LegacyChunk, chunk_documents
 from env_loader import load_dotenv_once
 from parser.driver import parse_documents
-from parser.metrics import merge_doc_stats
-from parser.types import ParsedDoc, RunReport
+from parser.metrics import document_stats, merge_doc_stats
+from parser.types import ParsedDocument, RunReport
 from retrieval import RetrievalConfig, build_indexes, retrieve
 
 # Configure module-level logging using an environment-driven log level so that
@@ -128,19 +128,19 @@ def _default_retrieval_label() -> str:
     return DEFAULT_RETRIEVAL_LABEL if DEFAULT_RETRIEVAL_LABEL in RETRIEVAL_LABEL_TO_KEY else "Semantic → Rerank"
 
 
-def _build_debug_payload(docs: Sequence[ParsedDoc], report: RunReport) -> Dict[str, object]:
+def _build_debug_payload(docs: Sequence[ParsedDocument], report: RunReport) -> Dict[str, object]:
     """Assemble per-document and aggregate statistics for the debug panel."""
 
     # Collect per-document metrics so operators can drill into parsing stats for
     # individual files when troubleshooting.
-    per_doc = {
-        doc.doc_id: {
-            "file_name": doc.pages[0].metadata.get("file_name", doc.doc_id) if doc.pages else doc.doc_id,
-            "parser_used": doc.parser_used,
-            "stats": doc.stats,
+    per_doc: Dict[str, Dict[str, object]] = {}
+    for doc in docs:
+        file_name = Path(getattr(doc, "file_path", "")).name or doc.doc_id
+        per_doc[doc.doc_id] = {
+            "file_name": file_name,
+            "parser_used": "cpu_parser",
+            "stats": document_stats(doc),
         }
-        for doc in docs
-    }
     # Merge metrics across all documents for a quick high-level view.
     aggregate = merge_doc_stats(list(docs))
     payload: Dict[str, object] = {
@@ -369,24 +369,26 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
 
     # Run the parser driver and collect the structured documents plus a run
     # report describing any warnings or skipped files.
-    docs, parse_report = parse_documents(file_paths, strategy_env=strategy)
+    docs, parse_report = parse_documents(file_paths, mode=strategy)
 
     # Invoke the chunking pipeline using the selected mode so the retrieval
     # system receives consistent chunk structures.
     chunk_mode = CHUNK_MODE_LABELS.get(chunk_mode_label, "semantic")
-    chunks, chunk_stats = chunk_documents(docs, mode=chunk_mode)
+    chunk_records, chunk_stats = chunk_documents(docs, mode=chunk_mode)
+    chunks: List[LegacyChunk] = list(chunk_records)
 
     parsed_docs_payload: List[Dict[str, object]] = []
     for doc in docs:
-        doc_name = getattr(doc, "doc_name", None) or doc.doc_id
+        doc_name = Path(getattr(doc, "file_path", "")).name or doc.doc_id
         pages_payload: List[Dict[str, object]] = []
         for page in doc.pages:
+            page_text = "\n".join(line.text for line in page.lines)
             pages_payload.append(
                 {
-                    "page_num": page.page_num,
-                    "text": page.text,
-                    "offset_start": getattr(page, "offset_start", None),
-                    "offset_end": getattr(page, "offset_end", None),
+                    "page_num": page.page_index + 1,
+                    "text": page_text,
+                    "offset_start": None,
+                    "offset_end": None,
                 }
             )
         parsed_docs_payload.append(
@@ -394,7 +396,7 @@ def parse_batch(files, mode_label: str, chunk_mode_label: str, *, full_output: b
                 "doc_id": doc.doc_id,
                 "doc_name": doc_name,
                 "pages": pages_payload,
-                "meta": getattr(doc, "meta", {}),
+                "meta": {"file_path": getattr(doc, "file_path", None)},
             }
         )
 
