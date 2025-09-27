@@ -9,6 +9,7 @@ from typing import List, Sequence
 
 import fitz  # type: ignore
 import pytesseract
+import subprocess
 
 from .config import Config
 from .pdf_io import PageSignals
@@ -56,25 +57,68 @@ def render_page_to_image(page: fitz.Page, dpi: int) -> tuple[Path, int, int]:
     return image_path, pix.width, pix.height
 
 
-def run_tesseract_tsv(image_path: Path, *, dpi: int, lang: str | None = None) -> Path:
-    output_base = image_path.with_suffix("")
-    pytesseract.run_tesseract(
+def _call_tesseract(
+    image_path: Path,
+    output_base: Path,
+    *,
+    extension: str,
+    dpi: int,
+    lang: str | None,
+) -> None:
+    """Invoke Tesseract with broad compatibility across pytesseract versions."""
+
+    if hasattr(pytesseract, "run_tesseract"):
+        pytesseract.run_tesseract(
+            str(image_path),
+            str(output_base),
+            extension=extension,
+            lang=lang,
+            config=f"--dpi {dpi} --psm 6",
+        )
+        return
+
+    module = getattr(pytesseract, "pytesseract", None)
+    if module is not None and hasattr(module, "run_tesseract"):
+        module.run_tesseract(
+            str(image_path),
+            str(output_base),
+            extension=extension,
+            lang=lang,
+            config=f"--dpi {dpi} --psm 6",
+        )
+        return
+
+    tesseract_cmd = getattr(pytesseract, "tesseract_cmd", "tesseract")
+    cmd = [
+        tesseract_cmd,
         str(image_path),
         str(output_base),
+    ]
+    if lang:
+        cmd.extend(["-l", lang])
+    cmd.extend(["--dpi", str(dpi), "--psm", "6", extension])
+    subprocess.run(cmd, check=True)
+
+
+def run_tesseract_tsv(image_path: Path, *, dpi: int, lang: str | None = None) -> Path:
+    output_base = image_path.with_suffix("")
+    _call_tesseract(
+        image_path,
+        output_base,
         extension="tsv",
+        dpi=dpi,
         lang=lang,
-        config=f"--dpi {dpi} --psm 6",
     )
     return output_base.with_suffix(".tsv")
 
 
 def run_tesseract_hocr(image_path: Path, *, dpi: int, lang: str | None = None) -> Path:
     output_base = image_path.with_suffix("")
-    pytesseract.run_tesseract(
-        str(image_path),
-        str(output_base),
+    _call_tesseract(
+        image_path,
+        output_base,
         extension="hocr",
+        dpi=dpi,
         lang=lang,
-        config=f"--dpi {dpi} --psm 6",
     )
     return output_base.with_suffix(".hocr")
