@@ -1,4 +1,4 @@
-docling==0.14.0
+docling==2.54.0
 pymupdf==1.24.9
 pytesseract==0.3.10
 layoutparser==0.3.4
