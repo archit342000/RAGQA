@@ -40,6 +40,7 @@ class PageTriageResult:
 class PageTriageSummary:
     doc_id: str
     file_name: str
+    pdf_bytes: bytes
     pages: List[PageTriageResult]
 
     def to_csv_rows(self) -> List[List[str]]:
@@ -133,4 +134,6 @@ def triage_document(pdf_path: str, config: PipelineConfig) -> PageTriageSummary:
     finally:
         doc.close()
     logger.debug("Triage completed for %s in %.2f seconds", doc_name, time.perf_counter() - start_time)
-    return PageTriageSummary(doc_id=doc_id, file_name=doc_name, pages=pages)
+    return PageTriageSummary(
+        doc_id=doc_id, file_name=doc_name, pdf_bytes=pdf_bytes, pages=pages
+    )

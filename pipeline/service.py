@@ -102,7 +102,7 @@ class PipelineService:
         triage_summary.pages = list(triage_pages)
         layout_decisions = plan_layout_rescue(triage_pages)
         telemetry.layout_pages = [d.page_number for d in layout_decisions if d.should_rescue]
-        docling_blocks = run_docling(triage_pages)
+        docling_blocks = run_docling(triage_summary.pdf_bytes, triage_pages)
         rescued_blocks = apply_layout_rescue(docling_blocks, layout_decisions)
         blocks = normalise_blocks(triage_summary.doc_id, rescued_blocks, self.config, telemetry)
         chunks = chunk_blocks(triage_summary.doc_id, blocks, self.config, telemetry)
