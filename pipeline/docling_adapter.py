@@ -118,7 +118,15 @@ def run_docling(pdf_bytes: bytes, triage: Iterable[PageTriageResult]) -> List[Do
     if not blocks:
         return fallback_blocks(triage)
 
-    return blocks
+    extras: List[DoclingBlock] = []
+    for page in triage:
+        if any(block.page_number == page.page_number for block in blocks):
+            continue
+        extracted = _extractor_fallback_block(page)
+        if extracted is not None:
+            extras.append(extracted)
+
+    return blocks + extras
 
 
 def _build_docling_input(pdf_bytes: bytes) -> Optional[Any]:  # pragma: no cover - import heavy
@@ -163,19 +171,36 @@ def _build_docling_input(pdf_bytes: bytes) -> Optional[Any]:  # pragma: no cover
 def fallback_blocks(triage: Iterable[PageTriageResult]) -> List[DoclingBlock]:
     blocks: List[DoclingBlock] = []
     for page in triage:
-        if not page.text.strip():
-            continue
-        blocks.append(
-            DoclingBlock(
-                page_number=page.page_number,
-                block_type="paragraph",
-                text=page.text,
-                bbox=None,
-                heading_level=None,
-                heading_path=[],
-                source_stage="triage",
-                source_tool="pymupdf",
-                source_version=getattr(fitz, "__doc__", "unknown") if "fitz" in globals() else "unknown",
-            )
-        )
+        extracted = _extractor_fallback_block(page)
+        if extracted is not None:
+            blocks.append(extracted)
     return blocks
+
+
+def _extractor_fallback_block(page: PageTriageResult) -> DoclingBlock | None:
+    text = page.best_extractor_text().strip()
+    if not text:
+        return None
+    tool = _select_extractor_tool(page)
+    return DoclingBlock(
+        page_number=page.page_number,
+        block_type="paragraph",
+        text=text,
+        bbox=None,
+        heading_level=None,
+        heading_path=[],
+        source_stage="extractor",
+        source_tool=tool,
+        source_version="fallback",
+    )
+
+
+def _select_extractor_tool(page: PageTriageResult) -> str:
+    mapping = page.extractor_text_map
+    if mapping.get("pdfminer", "").strip():
+        return "pdfminer"
+    if mapping.get("fitz", "").strip():
+        return "pymupdf"
+    if mapping.get("pdfium", "").strip():
+        return "pypdfium2"
+    return "triage"

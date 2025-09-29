@@ -28,9 +28,9 @@ def build_degraded_segment_chunks(
         stub = "No structured text recovered; emitting triage fallback."
         paragraphs.append((None, stub))
 
-    target = config.chunk.tokens.target
-    minimum = config.chunk.tokens.minimum
-    maximum = config.chunk.tokens.maximum
+    target = config.chunk.degraded_target
+    minimum = config.chunk.degraded_minimum
+    maximum = config.chunk.degraded_maximum
     chunks: List[SegmentChunk] = []
     buffer: List[tuple[Block | None, str]] = []
 
@@ -92,5 +92,26 @@ def build_degraded_segment_chunks(
 
 
 def _normalise_paragraph(text: str) -> str:
-    lines = [line.strip("-") for line in text.splitlines()]
-    return " ".join(segment.strip() for segment in lines if segment.strip())
+    lines = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            lines.append("\n")
+            continue
+        if stripped.endswith("-") and len(stripped) > 1 and not stripped.endswith("--"):
+            stripped = stripped[:-1]
+        lines.append(stripped)
+    paragraph = []
+    buffer: List[str] = []
+    for token in lines:
+        if token == "\n":
+            if buffer:
+                paragraph.append(" ".join(buffer))
+                buffer = []
+            continue
+        buffer.append(token)
+    if buffer:
+        paragraph.append(" ".join(buffer))
+    if not paragraph:
+        paragraph = [" ".join(token for token in lines if token and token != "\n")]
+    return "\n\n".join(segment for segment in paragraph if segment)

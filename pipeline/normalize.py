@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence, Tuple, Dict, Any, Optional, TYPE_CHECKING
 
@@ -42,49 +43,101 @@ def normalise_blocks(
     config: PipelineConfig,
     telemetry: "Telemetry | None" = None,
 ) -> List[Block]:
-    normalised: List[Block] = []
     header_footer_stats = _compute_header_footer_stats(blocks, config)
+    prepared: List[Tuple[DoclingBlock, Dict[str, Any]]] = []
     for order, block in enumerate(blocks):
-        bbox = None
-        if block.bbox:
-            x0, y0, x1, y1 = block.bbox
-            bbox = {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
-        else:
-            bbox = {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0}
-        block_type = block.block_type if block.block_type in {
-            "heading",
-            "paragraph",
-            "list",
-            "item",
-            "table",
-            "figure",
-            "caption",
-            "code",
-            "footnote",
-        } else "paragraph"
+        bbox = {
+            "x0": float(block.bbox[0]) if block.bbox else 0.0,
+            "y0": float(block.bbox[1]) if block.bbox else 0.0,
+            "x1": float(block.bbox[2]) if block.bbox else 0.0,
+            "y1": float(block.bbox[3]) if block.bbox else 0.0,
+        }
+        block_type = (
+            block.block_type
+            if block.block_type
+            in {
+                "heading",
+                "paragraph",
+                "list",
+                "item",
+                "table",
+                "figure",
+                "caption",
+                "code",
+                "footnote",
+            }
+            else "paragraph"
+        )
+        cleaned_text = _clean_text(block.text)
         role, aux_subtype, parent_block_id, confidence, drop, flag = _classify_block(
             block_type,
-            block.text,
+            cleaned_text,
             block.page_number,
             bbox,
             header_footer_stats,
             config,
         )
+        prepared.append(
+            (
+                block,
+                {
+                    "order": order,
+                    "bbox": bbox,
+                    "type": block_type,
+                    "text": cleaned_text,
+                    "role": role,
+                    "aux_subtype": aux_subtype,
+                    "parent": parent_block_id,
+                    "confidence": confidence,
+                    "drop": drop,
+                    "flag": flag,
+                },
+            )
+        )
+
+    dropcap = config.aux.header_footer.dropcap_max_fraction
+    dropped_by_page: Dict[int, int] = {}
+    total_by_page: Dict[int, int] = {}
+    for block, meta in prepared:
+        page = block.page_number
+        total_by_page[page] = total_by_page.get(page, 0) + 1
+        if meta["drop"] and meta["aux_subtype"] in {"header", "footer"}:
+            dropped_by_page[page] = dropped_by_page.get(page, 0) + 1
+
+    relaxed_pages = {
+        page
+        for page, total in total_by_page.items()
+        if total > 0
+        and dropped_by_page.get(page, 0) / total > dropcap
+    }
+    if telemetry is not None:
+        for page in relaxed_pages:
+            telemetry.mark_filter_relaxed(page)
+
+    normalised: List[Block] = []
+    for block, meta in prepared:
+        page = block.page_number
+        drop = meta["drop"]
+        flag = meta["flag"]
+        if drop and page in relaxed_pages:
+            drop = False
         if drop:
             if telemetry is not None:
                 telemetry.inc("aux_discarded")
             if flag and telemetry is not None:
                 telemetry.flag(flag)
             continue
+        if flag and telemetry is not None:
+            telemetry.flag(flag)
         normalised.append(
             Block(
                 doc_id=doc_id,
-                block_id=make_block_id(block.page_number, order + 1),
+                block_id=make_block_id(block.page_number, meta["order"] + 1),
                 page=block.page_number,
-                order=order,
-                type=block_type,
-                text=block.text,
-                bbox=bbox,
+                order=meta["order"],
+                type=meta["type"],
+                text=meta["text"],
+                bbox=meta["bbox"],
                 heading_level=block.heading_level,
                 heading_path=list(block.heading_path),
                 source={
@@ -93,14 +146,12 @@ def normalise_blocks(
                     "version": block.source_version,
                 },
                 aux=dict(block.aux),
-                role=role,
-                aux_subtype=aux_subtype,
-                parent_block_id=parent_block_id,
-                role_confidence=confidence,
+                role=meta["role"],
+                aux_subtype=meta["aux_subtype"],
+                parent_block_id=meta["parent"],
+                role_confidence=meta["confidence"],
             )
         )
-        if flag and telemetry is not None:
-            telemetry.flag(flag)
     return normalised
 
 
@@ -245,3 +296,17 @@ def _classify_block(
         return role, aux_subtype, parent, confidence, drop, flag
 
     return role, aux_subtype, parent, confidence, drop, flag
+
+
+def _clean_text(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned_chars: List[str] = []
+    for ch in text:
+        if ch == "\x00":
+            continue
+        category = unicodedata.category(ch)
+        if category.startswith("C") and ch not in {"\n", "\r", "\t"}:
+            continue
+        cleaned_chars.append(ch)
+    return "".join(cleaned_chars)

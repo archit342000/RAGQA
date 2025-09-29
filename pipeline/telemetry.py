@@ -32,12 +32,14 @@ class Telemetry:
     ocr_pages_cpu: int = 0
     ocr_pages_gpu: int = 0
     emitted_chunks: int = 0
+    text_layer_pages: int = 0
     fallbacks_used: Dict[str, int] = field(
         default_factory=lambda: {"docling_fail": 0, "ocr": 0, "degraded": 0}
     )
     first_error_code: Optional[str] = None
     per_page_rows: List[Dict[str, object]] = field(default_factory=list)
     stage_timings: Dict[str, float] = field(default_factory=dict)
+    filter_relaxed_pages: set[int] = field(default_factory=set)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -63,6 +65,8 @@ class Telemetry:
                 "ocr_pages_gpu": self.ocr_pages_gpu,
                 "layout_pages": len(self.layout_pages),
                 "emitted_chunks": self.emitted_chunks,
+                "text_layer_pages": self.text_layer_pages,
+                "relaxed_filter_pages": len(self.filter_relaxed_pages),
                 "fallbacks_used": self.fallbacks_used,
                 "first_error_code": self.first_error_code,
             },
@@ -104,6 +108,14 @@ class Telemetry:
         text_len: int,
         fallback_applied: bool,
         error_codes: List[str],
+        len_text_fitz: int,
+        len_text_pdfium: int,
+        len_text_pdfminer: int,
+        has_type3: bool,
+        has_cid: bool,
+        has_tounicode: bool,
+        path_used: str,
+        filter_relaxed: bool,
     ) -> None:
         self.per_page_rows.append(
             {
@@ -114,8 +126,22 @@ class Telemetry:
                 "text_len": text_len,
                 "fallback_applied": fallback_applied,
                 "error_codes": list(error_codes),
+                "len_text_fitz": len_text_fitz,
+                "len_text_pdfium": len_text_pdfium,
+                "len_text_pdfminer": len_text_pdfminer,
+                "has_type3": has_type3,
+                "has_cid": has_cid,
+                "has_tounicode": has_tounicode,
+                "path_used": path_used,
+                "filter_relaxed": filter_relaxed,
             }
         )
+
+    def mark_filter_relaxed(self, page: int) -> None:
+        self.filter_relaxed_pages.add(page)
+
+    def was_filter_relaxed(self, page: int) -> bool:
+        return page in self.filter_relaxed_pages
 
 
 def record_triage(summary: PageTriageSummary, started_at: float) -> Telemetry:

@@ -82,6 +82,11 @@ def chunk_blocks(
     telemetry=None,
 ) -> List[Chunk]:
     telemetry = telemetry or _NullTelemetry()
+    if _should_use_degraded(blocks):
+        degraded_payloads = build_degraded_segment_chunks(doc_id, blocks, config)
+        if telemetry is not None:
+            telemetry.flag("DEGRADED_PATH")
+        return _convert_chunks(doc_id, degraded_payloads)
     segmentor = Segmentor(doc_id, config, telemetry, count_tokens)
     chunks: List[Chunk] = []
 
@@ -109,3 +114,12 @@ def chunk_blocks(
             chunks.extend(_convert_chunks(doc_id, degraded_payloads))
 
     return chunks
+
+
+def _should_use_degraded(blocks: Sequence[Block]) -> bool:
+    if not blocks:
+        return False
+    if any(block.type == "heading" for block in blocks):
+        return False
+    permitted_sources = {"extractor", "triage", "ocr"}
+    return all(block.source.get("stage") in permitted_sources for block in blocks)

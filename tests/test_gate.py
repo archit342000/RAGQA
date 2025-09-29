@@ -19,6 +19,14 @@ def _page(**overrides):
         text="Plain text",  # default replaced per test
         bbox_spans=[],
         errors=[],
+        len_text_fitz=500,
+        len_text_pdfium=0,
+        len_text_pdfminer=0,
+        has_type3=False,
+        has_cid=False,
+        has_tounicode=True,
+        force_ocr=False,
+        digital_text=True,
     )
     base.update(overrides)
     return PageTriageResult(**base)

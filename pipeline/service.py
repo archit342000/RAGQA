@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from .chunker import Chunk, chunk_blocks
 from .config import PipelineConfig, DEFAULT_CONFIG
@@ -99,6 +99,7 @@ class PipelineService:
         triage_summary = triage_document(pdf_path, self.config)
         telemetry = record_triage(triage_summary, triage_start)
         telemetry.stage_timings["triage_ms"] = telemetry.triage_latency_ms
+        telemetry.text_layer_pages = sum(1 for page in triage_summary.pages if page.digital_text)
         ocr_decisions = plan_ocr(triage_summary.pages, self.config)
         telemetry.ocr_decisions = ocr_decisions
         ocr_watchdog = Watchdog("ocr", self.config.timeouts.ocr_seconds)
@@ -147,18 +148,35 @@ class PipelineService:
         if telemetry.doc_time_ms > self.config.timeouts.doc_cap_seconds * 1000:
             telemetry.flag("DOC_TIMEOUT")
 
+        page_sources: Dict[int, str] = {}
+        for block in rescued_blocks:
+            existing = page_sources.get(block.page_number)
+            if existing == "docling":
+                continue
+            if block.source_stage == "docling" or existing is None:
+                page_sources[block.page_number] = block.source_stage
         docling_page_numbers = {
-            block.page_number for block in docling_blocks if block.source_stage == "docling"
+            page for page, stage in page_sources.items() if stage == "docling"
         }
         ocr_pages = {decision.page_number for decision in ocr_decisions if decision.should_ocr}
         for page in triage_summary.pages:
             if page.page_number in ocr_pages:
                 page.stage_used = "ocr"
+                page.path_used = "ocr"
             elif page.page_number in docling_page_numbers:
                 page.stage_used = "docling"
+                page.path_used = "docling"
             else:
-                page.stage_used = "triage"
-                page.fallback_applied = True
+                stage = page_sources.get(page.page_number)
+                if stage == "extractor":
+                    page.stage_used = "extractor"
+                    page.path_used = "extractor"
+                    page.fallback_applied = True
+                else:
+                    page.stage_used = "triage"
+                    page.path_used = "triage"
+                    page.fallback_applied = True
+            page.filter_relaxed = telemetry.was_filter_relaxed(page.page_number)
             telemetry.record_per_page(
                 page=page.page_number,
                 stage_used=page.stage_used,
@@ -166,6 +184,14 @@ class PipelineService:
                 text_len=len(page.text),
                 fallback_applied=page.fallback_applied,
                 error_codes=page.error_codes or page.errors,
+                len_text_fitz=page.len_text_fitz,
+                len_text_pdfium=page.len_text_pdfium,
+                len_text_pdfminer=page.len_text_pdfminer,
+                has_type3=page.has_type3,
+                has_cid=page.has_cid,
+                has_tounicode=page.has_tounicode,
+                path_used=page.path_used,
+                filter_relaxed=page.filter_relaxed,
             )
         triage_rows = triage_summary.to_csv_rows()
         return PipelineResult(

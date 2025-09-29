@@ -1,5 +1,7 @@
 docling==2.54.0
 pymupdf==1.24.9
+pypdfium2==4.30.0
+pdfminer.six==20231228
 pytesseract==0.3.10
 layoutparser==0.3.4
 opencv-python==4.9.0.80

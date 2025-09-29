@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, List
 
 
 CONFIG_DEFAULTS: Dict[str, Any] = {
@@ -13,6 +13,14 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
             "text_coverage_threshold": 0.05,
         },
         "math_density_threshold": 0.02,
+        "force": {
+            "dpi": {"default": 200, "math": 300},
+        },
+        "psm": [6, 4],
+        "oem": 1,
+    },
+    "extractor": {
+        "vote": {"char_threshold": 150},
     },
     "raster": {
         "dpi": {"default": 200, "math": 300},
@@ -20,9 +28,10 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
     },
     "chunk": {
         "tokens": {"target": 1000, "min": 500, "max": 1400},
+        "degraded": {"target": 1000, "min": 900, "max": 1100},
     },
     "aux": {
-        "header_footer": {"repetition_threshold": 0.50},
+        "header_footer": {"repetition_threshold": 0.50, "dropcap_max_fraction": 0.30},
         "y_band": {"pct": 0.03},
         "segment0": {"min_chars": 150, "font_percentile": 0.80},
         "superscript": {"y_offset_xheight": 0.20},
@@ -51,6 +60,15 @@ class OCRGateConfig:
 class OCRConfig:
     gate: OCRGateConfig = field(default_factory=OCRGateConfig)
     math_density_threshold: float = 0.02
+    force_default_dpi: int = 200
+    force_math_dpi: int = 300
+    psm: List[int] = field(default_factory=lambda: [6, 4])
+    oem: int = 1
+
+
+@dataclass
+class ExtractorVoteConfig:
+    char_threshold: int = 150
 
 
 @dataclass
@@ -70,11 +88,15 @@ class ChunkTokensConfig:
 @dataclass
 class ChunkConfig:
     tokens: ChunkTokensConfig = field(default_factory=ChunkTokensConfig)
+    degraded_target: int = 1000
+    degraded_minimum: int = 900
+    degraded_maximum: int = 1100
 
 
 @dataclass
 class AuxHeaderFooterConfig:
     repetition_threshold: float = 0.50
+    dropcap_max_fraction: float = 0.30
 
 
 @dataclass
@@ -121,6 +143,7 @@ class ConcurrencyConfig:
 class PipelineConfig:
     gpu: GPUConfig = field(default_factory=GPUConfig)
     ocr: OCRConfig = field(default_factory=OCRConfig)
+    extractor: ExtractorVoteConfig = field(default_factory=ExtractorVoteConfig)
     raster: RasterConfig = field(default_factory=RasterConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     aux: AuxConfig = field(default_factory=AuxConfig)
@@ -149,6 +172,27 @@ class PipelineConfig:
             ocr=OCRConfig(
                 gate=OCRGateConfig(**merged.get("ocr", {}).get("gate", {})),
                 math_density_threshold=float(merged.get("ocr", {}).get("math_density_threshold", 0.02)),
+                force_default_dpi=int(
+                    merged.get("ocr", {})
+                    .get("force", {})
+                    .get("dpi", {})
+                    .get("default", 200)
+                ),
+                force_math_dpi=int(
+                    merged.get("ocr", {})
+                    .get("force", {})
+                    .get("dpi", {})
+                    .get("math", 300)
+                ),
+                psm=list(merged.get("ocr", {}).get("psm", [6, 4])),
+                oem=int(merged.get("ocr", {}).get("oem", 1)),
+            ),
+            extractor=ExtractorVoteConfig(
+                char_threshold=int(
+                    merged.get("extractor", {})
+                    .get("vote", {})
+                    .get("char_threshold", 150)
+                )
             ),
             raster=RasterConfig(
                 default_dpi=int(merged.get("raster", {}).get("dpi", {}).get("default", 200)),
@@ -160,7 +204,16 @@ class PipelineConfig:
                     target=int(merged.get("chunk", {}).get("tokens", {}).get("target", 1000)),
                     minimum=int(merged.get("chunk", {}).get("tokens", {}).get("min", 500)),
                     maximum=int(merged.get("chunk", {}).get("tokens", {}).get("max", 1400)),
-                )
+                ),
+                degraded_target=int(
+                    merged.get("chunk", {}).get("degraded", {}).get("target", 1000)
+                ),
+                degraded_minimum=int(
+                    merged.get("chunk", {}).get("degraded", {}).get("min", 900)
+                ),
+                degraded_maximum=int(
+                    merged.get("chunk", {}).get("degraded", {}).get("max", 1100)
+                ),
             ),
             aux=AuxConfig(
                 header_footer=AuxHeaderFooterConfig(
@@ -168,7 +221,12 @@ class PipelineConfig:
                         merged.get("aux", {})
                         .get("header_footer", {})
                         .get("repetition_threshold", 0.50)
-                    )
+                    ),
+                    dropcap_max_fraction=float(
+                        merged.get("aux", {})
+                        .get("header_footer", {})
+                        .get("dropcap_max_fraction", 0.30)
+                    ),
                 ),
                 y_band_pct=float(merged.get("aux", {}).get("y_band", {}).get("pct", 0.03)),
                 segment0_min_chars=int(

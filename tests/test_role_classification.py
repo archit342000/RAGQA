@@ -1,5 +1,7 @@
 from pipeline.config import PipelineConfig
-from pipeline.normalize import _classify_block
+from pipeline.normalize import _classify_block, normalise_blocks
+from pipeline.docling_adapter import DoclingBlock
+from pipeline.telemetry import Telemetry
 
 
 def _stats():
@@ -44,3 +46,17 @@ def test_header_detection_drops() -> None:
         config,
     )
     assert subtype == "header" and drop
+
+
+def test_normalisation_relaxes_header_dropcap() -> None:
+    config = PipelineConfig.from_mapping({})
+    telemetry = Telemetry(doc_id="doc", file_name="doc.pdf")
+    blocks = [
+        DoclingBlock(page_number=1, block_type="paragraph", text="Header", bbox=(0.0, 0.0, 1.0, 0.02)),
+        DoclingBlock(page_number=1, block_type="paragraph", text="Body", bbox=(0.0, 0.2, 1.0, 0.4)),
+        DoclingBlock(page_number=1, block_type="paragraph", text="Footer", bbox=(0.0, 0.98, 1.0, 1.0)),
+    ]
+    normalised = normalise_blocks("doc", blocks, config, telemetry)
+
+    assert len(normalised) == 3
+    assert telemetry.was_filter_relaxed(1)
