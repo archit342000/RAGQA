@@ -149,6 +149,11 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
         scaled_flag = False
         surface_ratio = 0.0
 
+        previous_chunks = written_chunk_ids.pop(page_index, [])
+        existing_pending = list(pending_chunk_ids.get(page_index, []))
+        page_chunk_ids: List[str] = previous_chunks + existing_pending
+        page_tables: List[str] = []
+
         if decision.mode in {"partial", "full"}:
             ocr_result = ocr_engine.process_page(
                 page,
@@ -215,9 +220,6 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
             page_chunk_ids.append(stub_id)
             pending_chunk_ids.setdefault(page_index, []).append(record["chunk_id"])
             alerts.append("stub_emitted")
-
-        page_chunk_ids: List[str] = written_chunk_ids.pop(page_index, []) + list(pending_chunk_ids.get(page_index, []))
-        page_tables: List[str] = []
 
         for paragraph in paragraphs:
             emitted = builder.add_paragraph(paragraph)
