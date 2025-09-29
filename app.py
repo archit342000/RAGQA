@@ -123,18 +123,18 @@ def parse_batch_ui(files: Sequence[str] | None) -> tuple:
 
     return (
         state,
-        gr.Dropdown.update(choices=doc_choices, value=first_doc_id),
-        gr.Dropdown.update(choices=chunk_choices, value=first_chunk_id),
+        gr.update(choices=doc_choices, value=first_doc_id),
+        gr.update(choices=chunk_choices, value=first_chunk_id),
         first_chunk_text,
-        gr.Markdown.update(value=status_md),
-        gr.JSON.update(value=debug_payload),
+        gr.update(value=status_md),
+        gr.update(value=debug_payload),
         retrieval_state,
         DEFAULT_RETRIEVAL_LABEL,
-        gr.Markdown.update(value=""),
-        gr.Markdown.update(value=""),
-        gr.Markdown.update(value=""),
-        gr.JSON.update(value={}),
-        gr.Markdown.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value={}),
+        gr.update(value=""),
     )
 
 
@@ -142,7 +142,7 @@ def update_chunk_selector(doc_id: str, state: dict) -> tuple:
     docs = state.get("docs") or {}
     entry = docs.get(doc_id)
     if not entry:
-        return gr.Dropdown.update(choices=[], value=None), ""
+        return gr.update(choices=[], value=None), ""
     choices = []
     first_chunk_text = ""
     first_chunk_id = None
@@ -154,7 +154,7 @@ def update_chunk_selector(doc_id: str, state: dict) -> tuple:
         if first_chunk_id is None:
             first_chunk_id = chunk["chunk_id"]
             first_chunk_text = chunk["text"]
-    return gr.Dropdown.update(choices=choices, value=first_chunk_id), first_chunk_text
+    return gr.update(choices=choices, value=first_chunk_id), first_chunk_text
 
 
 def show_chunk(chunk_id: str, state: dict) -> str:
