@@ -16,6 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("input_pdf", type=Path)
     parser.add_argument("--outdir", type=Path, required=True)
     parser.add_argument("--config", type=Path, help="Optional JSON config override")
+    parser.add_argument("--toml-config", type=Path, help="Optional OCR runtime config (TOML/INI)")
     parser.add_argument("--mode", choices=["fast", "thorough"], default="fast")
     return parser
 
@@ -32,7 +33,8 @@ def main(argv: List[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     config_path = str(args.config) if args.config else None
-    config = Config.from_sources(json_path=config_path)
+    toml_path = str(args.toml_config) if args.toml_config else None
+    config = Config.from_sources(json_path=config_path, toml_path=toml_path)
     parse_and_chunk(args.input_pdf, args.outdir, config=config, mode=args.mode)
     return 0
 

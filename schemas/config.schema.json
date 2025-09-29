@@ -18,7 +18,57 @@
     "bbox_mode": {"enum": ["line", "band"]},
     "mode": {"enum": ["fast", "thorough"]},
     "max_pages": {"type": "integer", "minimum": 1},
-    "progress_flush_interval": {"type": "integer", "minimum": 1}
+    "progress_flush_interval": {"type": "integer", "minimum": 1},
+    "ocr_policy": {
+      "type": "object",
+      "properties": {
+        "promote_none_glyphs": {"type": "integer", "minimum": 0},
+        "promote_none_glyphs_with_quality": {"type": "integer", "minimum": 0},
+        "unicode_quality_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+        "full_threshold_s_native": {"type": "number", "minimum": 0},
+        "probe_selectable_bands": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "work_caps": {
+      "type": "object",
+      "properties": {
+        "max_page_megapixels": {"type": "number", "minimum": 0.1},
+        "max_rois_per_page": {"type": "integer", "minimum": 1},
+        "max_doc_ocr_surface_multiplier": {"type": "number", "minimum": 0},
+        "dpi": {"type": "integer", "minimum": 72},
+        "dpi_retry_small_roi": {"type": "integer", "minimum": 72},
+        "retry_small_roi_height_frac": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "tesseract": {
+      "type": "object",
+      "properties": {
+        "oem": {"type": "integer", "minimum": 0, "maximum": 3},
+        "psm": {"type": "integer", "minimum": 0, "maximum": 13},
+        "lang": {"type": "string"},
+        "disable_dawgs": {"type": "boolean"},
+        "whitelist": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "concurrency": {
+      "type": "object",
+      "properties": {
+        "ocr_workers": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "fail_fast": {
+      "type": "object",
+      "properties": {
+        "roi_min_alnum_chars": {"type": "integer", "minimum": 0},
+        "roi_max_retries": {"type": "integer", "minimum": 0},
+        "emit_stub_on_fail": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": true
 }

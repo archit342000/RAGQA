@@ -1,0 +1,29 @@
+[ocr_policy]
+promote_none_glyphs = 800
+promote_none_glyphs_with_quality = 400
+unicode_quality_threshold = 0.90
+full_threshold_s_native = 0.25
+probe_selectable_bands = 2
+
+[work_caps]
+max_page_megapixels = 10
+max_rois_per_page = 3
+max_doc_ocr_surface_multiplier = 1.0
+dpi = 300
+dpi_retry_small_roi = 400
+retry_small_roi_height_frac = 0.25
+
+[tesseract]
+oem = 1
+psm = 6
+lang = "eng"
+disable_dawgs = true
+whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:%()-"
+
+[concurrency]
+ocr_workers = 2
+
+[fail_fast]
+roi_min_alnum_chars = 20
+roi_max_retries = 1
+emit_stub_on_fail = true

@@ -56,7 +56,21 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["index", "status", "ocr_mode", "chunks_emitted", "tables_emitted", "notes", "dpi_used", "tsv_lines", "alerts"],
+        "required": [
+          "index",
+          "status",
+          "ocr_mode",
+          "chunks_emitted",
+          "tables_emitted",
+          "notes",
+          "dpi_used",
+          "tsv_lines",
+          "alerts",
+          "rois_considered",
+          "rois_ocrd",
+          "scaled_due_to_megapixels",
+          "surface_consumed_ratio"
+        ],
         "properties": {
           "index": {"type": "integer", "minimum": 0},
           "status": {"enum": ["pending", "processing", "done"]},
@@ -78,7 +92,11 @@
           "alerts": {
             "type": "array",
             "items": {"type": "string"}
-          }
+          },
+          "rois_considered": {"type": "integer", "minimum": 0},
+          "rois_ocrd": {"type": "integer", "minimum": 0},
+          "scaled_due_to_megapixels": {"type": "boolean"},
+          "surface_consumed_ratio": {"type": "number", "minimum": 0.0}
         }
       }
     }

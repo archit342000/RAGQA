@@ -12,19 +12,13 @@ from .chunker import ChunkBuilder, Chunk, paragraphs_from_lines, estimate_tokens
 from .column_order import reorder_page_lines
 from .config import Config
 from .logging import EventLogger
-from .ocr import (
-    OCRDecision,
-    classify_pages,
-    render_page_to_image,
-    run_tesseract_hocr,
-    run_tesseract_tsv,
-)
+from .ocr import OCREngine, OCRDecision, classify_pages
 from .outputs import append_jsonl, hash_file, write_json
 from .pdf_io import Line, collect_page_lines, load_document_payload, open_document
 from .progress import ProgressTracker
 from .sidecars import split_sidecars
 from .table_detect import detect_tables_for_page, write_table_csv
-from .tsv import hocr_to_lines, merge_lines, tsv_to_lines
+from .tsv import merge_lines, tsv_to_lines
 
 
 @dataclass
@@ -90,10 +84,20 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
         pages_total=total_pages,
     )
 
-    _, signals = load_document_payload(pdf_path, max_pages=total_pages)
+    _, signals = load_document_payload(
+        pdf_path,
+        max_pages=total_pages,
+        probe_bands=config.ocr_policy.probe_selectable_bands,
+    )
     decisions = classify_pages(signals, config)
 
     original_doc = open_document(pdf_path)
+
+    ocr_engine = OCREngine(
+        config,
+        total_surface=sum(signal.page_area for signal in signals) or 1.0,
+        logger=logger,
+    )
 
     builder = ChunkBuilder(
         config,
@@ -123,6 +127,14 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
         if progress.state.pages[page_index].status == "done":
             continue
         decision = decisions[page_index] if page_index < len(decisions) else OCRDecision(page_index, "none")
+        logger.emit(
+            "ocr_decision",
+            page=page_index + 1,
+            mode=decision.mode,
+            reason=decision.promoted_reason,
+            glyphs=signals[page_index].glyph_count if page_index < len(signals) else None,
+            unicode_ratio=signals[page_index].unicode_ratio if page_index < len(signals) else None,
+        )
         progress.page_started(page_index, ocr_mode=decision.mode)
 
         page = original_doc.load_page(page_index)
@@ -132,68 +144,32 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
         dpi_used: Optional[int] = None
         alerts: List[str] = []
         tsv_line_count = 0
+        rois_considered = 0
+        rois_ocrd = 0
+        scaled_flag = False
+        surface_ratio = 0.0
 
         if decision.mode in {"partial", "full"}:
-            attempts = 0
-            rasterisations = 0
-            while attempts <= config.ocr_retry and rasterisations < config.rasterizations_per_page:
-                dpi = config.dpi_full if attempts == 0 else config.dpi_retry
-                rasterisations += 1
-                logger.emit("render_start", page=page_index + 1, dpi=dpi, attempt=attempts + 1)
-                image_path, width, height = render_page_to_image(page, dpi)
-                logger.emit("render_stop", page=page_index + 1, dpi=dpi, width=width, height=height)
-                tsv_path: Optional[Path] = None
-                hocr_path: Optional[Path] = None
-                try:
-                    logger.emit("tesseract_start", page=page_index + 1, dpi=dpi, attempt=attempts + 1)
-                    tsv_path = run_tesseract_tsv(image_path, dpi=dpi)
-                    ocr_lines = tsv_to_lines(
-                        page_index,
-                        tsv_path,
-                        pdf_width=page.rect.width,
-                        pdf_height=page.rect.height,
-                        image_width=width,
-                        image_height=height,
-                        dpi=dpi,
-                    )
-                    logger.emit("tesseract_stop", page=page_index + 1, dpi=dpi, lines=len(ocr_lines))
-                    dpi_used = dpi
-                    tsv_line_count = len(ocr_lines)
-                    if ocr_lines:
-                        break
-                    alerts.append("tsv_empty")
-                    counters["tsv_empty_alerts"] = counters.get("tsv_empty_alerts", 0) + 1
-                    logger.emit("tesseract_empty", page=page_index + 1, dpi=dpi, attempt=attempts + 1)
-                    hocr_path = run_tesseract_hocr(image_path, dpi=dpi)
-                    hocr_lines = hocr_to_lines(
-                        page_index,
-                        hocr_path,
-                        pdf_width=page.rect.width,
-                        pdf_height=page.rect.height,
-                        image_width=width,
-                        image_height=height,
-                    )
-                    if hocr_lines:
-                        alerts.append("hocr_fallback")
-                        ocr_lines = hocr_lines
-                        tsv_line_count = len(ocr_lines)
-                        logger.emit(
-                            "hocr_fallback",
-                            page=page_index + 1,
-                            dpi=dpi,
-                            attempt=attempts + 1,
-                            lines=len(hocr_lines),
-                        )
-                        break
-                finally:
-                    image_path.unlink(missing_ok=True)
-                    if tsv_path is not None:
-                        tsv_path.unlink(missing_ok=True)
-                    if hocr_path is not None:
-                        hocr_path.unlink(missing_ok=True)
-                attempts += 1
-            if not ocr_lines and decision.mode == "full":
-                alerts.append("ocr_no_text")
+            ocr_result = ocr_engine.process_page(
+                page,
+                decision,
+                signals[page_index],
+                native_lines,
+            )
+            ocr_lines = ocr_result.lines
+            dpi_used = ocr_result.dpi_used
+            alerts.extend(ocr_result.alerts)
+            tsv_line_count = ocr_result.tsv_lines
+            rois_considered = ocr_result.rois_considered
+            rois_ocrd = ocr_result.rois_ocrd
+            scaled_flag = ocr_result.scaled_due_to_megapixels
+            surface_ratio = ocr_result.surface_consumed_ratio
+            if any(alert == "tsv_empty" for alert in alerts):
+                counters["tsv_empty_alerts"] = counters.get("tsv_empty_alerts", 0) + 1
+            if not ocr_lines and decision.mode == "full" and config.fail_fast.emit_stub_on_fail:
+                alerts.append("ocr_stub_emitted")
+        else:
+            surface_ratio = ocr_engine.current_surface_ratio()
 
         merged_lines = merge_lines(native_lines, ocr_lines)
         counters["lines_total"] = counters.get("lines_total", 0) + len(merged_lines)
@@ -206,6 +182,39 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
 
         paragraphs, dropped = paragraphs_from_lines(sidecars.body, config=config)
         noise_dropped += dropped
+
+        if (
+            not paragraphs
+            and not merged_lines
+            and config.fail_fast.emit_stub_on_fail
+        ):
+            stub_id = builder._new_chunk_id()
+            stub_chunk = Chunk(
+                chunk_id=stub_id,
+                text="",
+                page_spans=[[page_index + 1, None]],
+                tokens=0,
+                type="body",
+                table_csv=None,
+                evidence_offsets=[],
+                neighbors={"prev": None, "next": None},
+            )
+            record = _chunk_record(pdf_path.stem, stub_chunk, provenance_hash)
+            if last_record is not None and last_owner is not None:
+                last_record["neighbors"]["next"] = record["chunk_id"]
+                append_jsonl(chunk_path, last_record)
+                body_token_accumulator.append(int(last_record["tokens_est"]))
+                written_chunk_ids.setdefault(last_owner, []).append(last_record["chunk_id"])
+                pending_ids = pending_chunk_ids.get(last_owner, [])
+                if last_record["chunk_id"] in pending_ids:
+                    pending_ids.remove(last_record["chunk_id"])
+                    if not pending_ids:
+                        pending_chunk_ids.pop(last_owner, None)
+            last_record = record
+            last_owner = page_index
+            page_chunk_ids.append(stub_id)
+            pending_chunk_ids.setdefault(page_index, []).append(record["chunk_id"])
+            alerts.append("stub_emitted")
 
         page_chunk_ids: List[str] = written_chunk_ids.pop(page_index, []) + list(pending_chunk_ids.get(page_index, []))
         page_tables: List[str] = []
@@ -296,6 +305,10 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
             dpi_used=dpi_used,
             tsv_lines=tsv_line_count,
             alerts=alerts,
+            rois_considered=rois_considered,
+            rois_ocrd=rois_ocrd,
+            scaled_due_to_megapixels=scaled_flag,
+            surface_consumed_ratio=surface_ratio,
         )
         progress.update_next_chunk_index(builder_state["next_chunk_index"])
 
@@ -329,6 +342,7 @@ def run_pipeline(pdf_path: Path, out_dir: Path, config: Config) -> PipelineResul
                     pending_chunk_ids.pop(last_owner, None)
 
     original_doc.close()
+    ocr_engine.close()
     elapsed = time.perf_counter() - start
     body_chunks = len(body_token_accumulator)
     avg_tokens = sum(body_token_accumulator) / body_chunks if body_chunks else 0

@@ -26,6 +26,10 @@ class PageProgress:
     dpi_used: int | None = None
     tsv_lines: int = 0
     alerts: List[str] = field(default_factory=list)
+    rois_considered: int = 0
+    rois_ocrd: int = 0
+    scaled_due_to_megapixels: bool = False
+    surface_consumed_ratio: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +42,10 @@ class PageProgress:
             "dpi_used": self.dpi_used,
             "tsv_lines": self.tsv_lines,
             "alerts": list(self.alerts),
+            "rois_considered": self.rois_considered,
+            "rois_ocrd": self.rois_ocrd,
+            "scaled_due_to_megapixels": self.scaled_due_to_megapixels,
+            "surface_consumed_ratio": self.surface_consumed_ratio,
         }
 
 
@@ -119,6 +127,10 @@ class ProgressTracker:
             page.dpi_used = payload.get("dpi_used")
             page.tsv_lines = int(payload.get("tsv_lines", 0))
             page.alerts = list(payload.get("alerts", []))
+            page.rois_considered = int(payload.get("rois_considered", 0))
+            page.rois_ocrd = int(payload.get("rois_ocrd", 0))
+            page.scaled_due_to_megapixels = bool(payload.get("scaled_due_to_megapixels", False))
+            page.surface_consumed_ratio = float(payload.get("surface_consumed_ratio", 0.0))
             pages.append(page)
         if not pages:
             self._initialise_pages(self.state.pages_total)
@@ -136,6 +148,10 @@ class ProgressTracker:
         page.dpi_used = None
         page.tsv_lines = 0
         page.alerts = []
+        page.rois_considered = 0
+        page.rois_ocrd = 0
+        page.scaled_due_to_megapixels = False
+        page.surface_consumed_ratio = 0.0
         self.flush()
 
     def page_completed(
@@ -151,6 +167,10 @@ class ProgressTracker:
         dpi_used: Optional[int] = None,
         tsv_lines: int = 0,
         alerts: Optional[List[str]] = None,
+        rois_considered: int = 0,
+        rois_ocrd: int = 0,
+        scaled_due_to_megapixels: bool = False,
+        surface_consumed_ratio: float = 0.0,
     ) -> None:
         page = self.state.pages[index]
         page.status = "done"
@@ -163,6 +183,10 @@ class ProgressTracker:
         if dpi_used is not None:
             page.dpi_used = dpi_used
         page.tsv_lines = tsv_lines
+        page.rois_considered = rois_considered
+        page.rois_ocrd = rois_ocrd
+        page.scaled_due_to_megapixels = scaled_due_to_megapixels
+        page.surface_consumed_ratio = surface_consumed_ratio
         if counters:
             self.state.counters.update(counters)
         if pending_paragraphs is not None:

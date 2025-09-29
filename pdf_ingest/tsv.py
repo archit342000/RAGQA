@@ -14,6 +14,17 @@ from difflib import SequenceMatcher
 from .pdf_io import Line
 
 
+def _apply_clip_offset(
+    bbox: Tuple[float, float, float, float],
+    clip_bbox: Tuple[float, float, float, float] | None,
+) -> Tuple[float, float, float, float]:
+    if clip_bbox is None:
+        return bbox
+    x0, y0, x1, y1 = bbox
+    cx0, cy0, _, _ = clip_bbox
+    return (x0 + cx0, y0 + cy0, x1 + cx0, y1 + cy0)
+
+
 def _scale_bbox(
     bbox: Tuple[float, float, float, float],
     *,
@@ -39,6 +50,7 @@ def tsv_to_lines(
     image_width: int,
     image_height: int,
     dpi: int,
+    clip_bbox: Tuple[float, float, float, float] | None = None,
 ) -> List[Line]:
     lines: List[Line] = []
     if not tsv_path.exists():
@@ -69,14 +81,36 @@ def tsv_to_lines(
             if key is None:
                 key = new_key
             if new_key != key:
-                lines.extend(_flush_tsv_buffer(page_idx, key, buffer, pdf_width, pdf_height, image_width, image_height))
+                lines.extend(
+                    _flush_tsv_buffer(
+                        page_idx,
+                        key,
+                        buffer,
+                        pdf_width,
+                        pdf_height,
+                        image_width,
+                        image_height,
+                        clip_bbox,
+                    )
+                )
                 buffer = []
                 key = new_key
             bbox = (left, top, left + width, top + height)
             buffer.append((text, bbox, conf))
 
     if buffer and key is not None:
-        lines.extend(_flush_tsv_buffer(page_idx, key, buffer, pdf_width, pdf_height, image_width, image_height))
+        lines.extend(
+            _flush_tsv_buffer(
+                page_idx,
+                key,
+                buffer,
+                pdf_width,
+                pdf_height,
+                image_width,
+                image_height,
+                clip_bbox,
+            )
+        )
 
     for idx, line in enumerate(lines):
         line.line_index = idx
@@ -94,6 +128,7 @@ def _flush_tsv_buffer(
     pdf_height: float,
     image_width: int,
     image_height: int,
+    clip_bbox: Tuple[float, float, float, float] | None,
 ) -> List[Line]:
     if not buffer:
         return []
@@ -105,7 +140,14 @@ def _flush_tsv_buffer(
     y0 = min(item[1][1] for item in buffer)
     x1 = max(item[1][2] for item in buffer)
     y1 = max(item[1][3] for item in buffer)
-    bbox = _scale_bbox((x0, y0, x1, y1), pdf_width=pdf_width, pdf_height=pdf_height, image_width=image_width, image_height=image_height)
+    bbox = _scale_bbox(
+        (x0, y0, x1, y1),
+        pdf_width=pdf_width,
+        pdf_height=pdf_height,
+        image_width=image_width,
+        image_height=image_height,
+    )
+    bbox = _apply_clip_offset(bbox, clip_bbox)
     avg_conf = sum(max(item[2], 0.0) for item in buffer) / len(buffer)
     return [
         Line(
@@ -131,6 +173,7 @@ def hocr_to_lines(
     pdf_height: float,
     image_width: int,
     image_height: int,
+    clip_bbox: Tuple[float, float, float, float] | None = None,
 ) -> List[Line]:
     if not hocr_path.exists():
         return []
@@ -151,6 +194,7 @@ def hocr_to_lines(
             continue
         x0, y0, x1, y1 = [float(val) for val in bbox_match.groups()]
         bbox = _scale_bbox((x0, y0, x1, y1), pdf_width=pdf_width, pdf_height=pdf_height, image_width=image_width, image_height=image_height)
+        bbox = _apply_clip_offset(bbox, clip_bbox)
         text = " ".join(unescape(part.strip()) for part in elem.itertext()).strip()
         if not text:
             continue

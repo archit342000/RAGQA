@@ -32,6 +32,9 @@ class PageSignals:
     whitespace_ratio: float
     hidden_text_layer: bool
     dpi: float
+    page_area: float
+    band_glyph_counts: List[int]
+    band_text_density: List[float]
 
 
 @dataclass
@@ -83,7 +86,13 @@ def collect_page_lines(page: fitz.Page) -> Tuple[List[Line], int]:
     return lines, glyphs
 
 
-def compute_page_signals(page: fitz.Page, lines: Sequence[Line], glyph_count: int) -> PageSignals:
+def compute_page_signals(
+    page: fitz.Page,
+    lines: Sequence[Line],
+    glyph_count: int,
+    *,
+    probe_bands: int = 2,
+) -> PageSignals:
     width, height = page.rect.width, page.rect.height
     area = max(width * height, 1.0)
     text_density = glyph_count / area
@@ -111,6 +120,22 @@ def compute_page_signals(page: fitz.Page, lines: Sequence[Line], glyph_count: in
     delimiter_ratio = delimiter_lines / max(len(lines), 1)
     whitespace_ratio = len(whitespace_samples) / max(total_chars, 1)
     dpi = (page.rect.width / (page.mediabox.width or 1)) * 72
+
+    bands = max(1, probe_bands)
+    band_glyph_counts = [0 for _ in range(bands)]
+    if lines:
+        for line in lines:
+            if not line.bbox:
+                continue
+            y_mid = (line.bbox[1] + line.bbox[3]) / 2.0
+            relative = 0.0 if height == 0 else max(0.0, min(0.9999, (y_mid - page.rect.y0) / height))
+            band_index = min(bands - 1, int(relative * bands))
+            band_glyph_counts[band_index] += len(line.text)
+    band_height = height / bands if bands else height
+    band_area = width * band_height if band_height else width * height
+    band_text_density = [
+        (band_glyph_counts[i] / max(band_area, 1.0)) if band_area else 0.0 for i in range(bands)
+    ]
     return PageSignals(
         index=page.number,
         glyph_count=glyph_count,
@@ -122,16 +147,24 @@ def compute_page_signals(page: fitz.Page, lines: Sequence[Line], glyph_count: in
         whitespace_ratio=whitespace_ratio,
         hidden_text_layer=hidden_text_layer,
         dpi=dpi,
+        page_area=area,
+        band_glyph_counts=band_glyph_counts,
+        band_text_density=band_text_density,
     )
 
 
-def load_document_payload(path: Path, *, max_pages: int | None = None) -> Tuple[List[PagePayload], List[PageSignals]]:
+def load_document_payload(
+    path: Path,
+    *,
+    max_pages: int | None = None,
+    probe_bands: int = 2,
+) -> Tuple[List[PagePayload], List[PageSignals]]:
     with open_document(path) as doc:
         pages: List[PagePayload] = []
         signals: List[PageSignals] = []
         for page in iterate_pages(doc, max_pages=max_pages):
             lines, glyphs = collect_page_lines(page)
             pages.append(PagePayload(index=page.number, lines=lines, glyph_count=glyphs))
-            signals.append(compute_page_signals(page, lines, glyphs))
+            signals.append(compute_page_signals(page, lines, glyphs, probe_bands=probe_bands))
         return pages, signals
 

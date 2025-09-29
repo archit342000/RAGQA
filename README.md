@@ -12,9 +12,11 @@ metadata.
 - **Per-operation caps** – no global timeout; rasterisations/page, OCR retries,
   and table probes are bounded to keep latency predictable.
 - **Selective OCR** – multi-signal heuristics choose `none|partial|full` per
-  page with neighbour smoothing and a single retry. When native text is
-  missing, pages/ROIs are rasterised (≤2×) and fed through Tesseract TSV (hOCR
-  fallback) so the pipeline stays text-only and resume-safe.
+  page with neighbour smoothing. OCR policy, Tesseract flags, ROI caps, and
+  concurrency are driven by the runtime config so the parser respects DPI,
+  megapixel, and surface-area limits deterministically. When native text is
+  missing, eligible ROIs are rasterised and fed through Tesseract TSV with
+  DAWGs disabled for determinism.
 - **Balanced chunking** – paragraphs rebuilt from lines, TF–IDF cosine drops
   determine topic boundaries, chunks target 350–600 tokens with 10–15% overlap
   only at strong boundaries, and captions/footnotes are routed to sidecars.
@@ -64,6 +66,7 @@ Optional flags:
 
 - `--mode fast|thorough` – choose the heuristic profile.
 - `--config path.json` – JSON overrides for the configuration (see below).
+- `--toml-config path.toml` – Text-only OCR runtime config (TOML or INI).
 
 Artifacts comply with the schemas under `schemas/`. `progress.json` captures the
 resume state (per-page status, OCR mode, counters, pending paragraphs).
@@ -94,7 +97,45 @@ dpi_full=300
 dpi_retry=400
 ```
 
-Resolved configuration (after merging overrides) is written to `config_used.json`.
+Additional OCR controls live in `configs/ocr_runtime.example.toml`:
+
+```
+[ocr_policy]
+promote_none_glyphs = 800
+promote_none_glyphs_with_quality = 400
+unicode_quality_threshold = 0.90
+full_threshold_s_native = 0.25
+probe_selectable_bands = 2
+
+[work_caps]
+max_page_megapixels = 10
+max_rois_per_page = 3
+max_doc_ocr_surface_multiplier = 1.0
+dpi = 300
+dpi_retry_small_roi = 400
+retry_small_roi_height_frac = 0.25
+
+[tesseract]
+oem = 1
+psm = 6
+lang = eng
+disable_dawgs = true
+whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:%()-"
+
+[concurrency]
+ocr_workers = 2
+
+[fail_fast]
+roi_min_alnum_chars = 20
+roi_max_retries = 1
+emit_stub_on_fail = true
+```
+
+Config precedence is **CLI overrides > TOML/INI > JSON > built-in defaults**.
+The merged configuration snapshot is written to `config_used.json` for auditing.
+
+`progress.json` records ROI counts, megapixel scaling, and OCR surface
+consumption so resume runs and monitoring can identify budget hits quickly.
 
 ## Testing
 
