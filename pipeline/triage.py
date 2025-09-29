@@ -30,6 +30,9 @@ class PageTriageResult:
     text: str
     bbox_spans: List[tuple[float, float, float, float]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    stage_used: str = "triage"
+    fallback_applied: bool = False
+    error_codes: List[str] = field(default_factory=list)
 
     @property
     def docling_empty(self) -> bool:
@@ -47,25 +50,20 @@ class PageTriageSummary:
         rows = [[
             "doc_id",
             "page",
-            "char_count",
-            "text_coverage",
-            "docling_ok",
-            "ocr_used",
-            "layout_rescue",
+            "stage_used",
             "latency_ms",
-            "errors",
+            "text_len",
+            "fallback_applied",
+            "error_codes",
         ]]
         for page in self.pages:
             rows.append([
                 page.doc_id,
                 str(page.page_number),
-                str(page.char_count),
-                f"{page.text_coverage:.6f}",
-                "true" if page.docling_ok else "false",
-                "true" if page.ocr_used else "false",
-                "true" if page.layout_rescue else "false",
                 f"{page.latency_ms:.3f}",
-                ";".join(page.errors),
+                str(len(page.text)),
+                "true" if page.fallback_applied else "false",
+                ";".join(page.error_codes or page.errors),
             ])
         return rows
 

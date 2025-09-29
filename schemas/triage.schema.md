@@ -1,4 +1,4 @@
 BEGIN VERBATIM SCHEMA
 Page Triage CSV
-- Columns: doc_id,page,char_count,text_coverage,docling_ok:bool,ocr_used:bool,layout_rescue:bool,latency_ms,errors
+- Columns: doc_id,page,stage_used,latency_ms,text_len,fallback_applied,error_codes
 END VERBATIM

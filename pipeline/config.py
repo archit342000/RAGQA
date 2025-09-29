@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 
-CONFIG_DEFAULTS: Mapping[str, Any] = {
-    "gpu": {"enable": False},
+CONFIG_DEFAULTS: Dict[str, Any] = {
+    "gpu": {"enable": False, "acquire_max_wait_seconds": 20},
     "ocr": {
         "gate": {
             "char_count_threshold": 200,
@@ -15,10 +15,11 @@ CONFIG_DEFAULTS: Mapping[str, Any] = {
         "math_density_threshold": 0.02,
     },
     "raster": {
-        "dpi": {"default": 240, "math": 300},
+        "dpi": {"default": 200, "math": 300},
+        "max_megapixels": 12,
     },
     "chunk": {
-        "tokens": {"target": 1000, "min": 600, "max": 1400},
+        "tokens": {"target": 1000, "min": 500, "max": 1400},
     },
     "aux": {
         "header_footer": {"repetition_threshold": 0.50},
@@ -27,7 +28,14 @@ CONFIG_DEFAULTS: Mapping[str, Any] = {
         "superscript": {"y_offset_xheight": 0.20},
         "soft_boundary": {"max_deferred_pages": 5},
     },
-    "timeouts": {"page_soft_seconds": 10},
+    "timeouts": {
+        "triage": {"seconds": 5},
+        "docling": {"seconds": 20},
+        "ocr": {"seconds": 12},
+        "layout": {"seconds": 8},
+        "doc": {"cap_seconds": 240},
+    },
+    "concurrency": {"pages": 2},
     "parallel": {"workers": 3},
     "cache": {"dir": "/cache/{doc_sha}/{page_no}/{dpi}"},
 }
@@ -47,14 +55,15 @@ class OCRConfig:
 
 @dataclass
 class RasterConfig:
-    default_dpi: int = 240
+    default_dpi: int = 200
     math_dpi: int = 300
+    max_megapixels: int = 12
 
 
 @dataclass
 class ChunkTokensConfig:
     target: int = 1000
-    minimum: int = 600
+    minimum: int = 500
     maximum: int = 1400
 
 
@@ -80,7 +89,11 @@ class AuxConfig:
 
 @dataclass
 class TimeoutConfig:
-    page_soft_seconds: int = 10
+    triage_seconds: int = 5
+    docling_seconds: int = 20
+    ocr_seconds: int = 12
+    layout_seconds: int = 8
+    doc_cap_seconds: int = 240
 
 
 @dataclass
@@ -96,6 +109,12 @@ class CacheConfig:
 @dataclass
 class GPUConfig:
     enable: bool = False
+    acquire_max_wait_seconds: int = 20
+
+
+@dataclass
+class ConcurrencyConfig:
+    pages: int = 2
 
 
 @dataclass
@@ -106,6 +125,7 @@ class PipelineConfig:
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     aux: AuxConfig = field(default_factory=AuxConfig)
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
 
@@ -131,13 +151,14 @@ class PipelineConfig:
                 math_density_threshold=float(merged.get("ocr", {}).get("math_density_threshold", 0.02)),
             ),
             raster=RasterConfig(
-                default_dpi=int(merged.get("raster", {}).get("dpi", {}).get("default", 240)),
+                default_dpi=int(merged.get("raster", {}).get("dpi", {}).get("default", 200)),
                 math_dpi=int(merged.get("raster", {}).get("dpi", {}).get("math", 300)),
+                max_megapixels=int(merged.get("raster", {}).get("max_megapixels", 12)),
             ),
             chunk=ChunkConfig(
                 tokens=ChunkTokensConfig(
                     target=int(merged.get("chunk", {}).get("tokens", {}).get("target", 1000)),
-                    minimum=int(merged.get("chunk", {}).get("tokens", {}).get("min", 600)),
+                    minimum=int(merged.get("chunk", {}).get("tokens", {}).get("min", 500)),
                     maximum=int(merged.get("chunk", {}).get("tokens", {}).get("max", 1400)),
                 )
             ),
@@ -167,7 +188,16 @@ class PipelineConfig:
                     .get("max_deferred_pages", 5)
                 ),
             ),
-            timeouts=TimeoutConfig(page_soft_seconds=int(merged.get("timeouts", {}).get("page_soft_seconds", 10))),
+            timeouts=TimeoutConfig(
+                triage_seconds=int(merged.get("timeouts", {}).get("triage", {}).get("seconds", 5)),
+                docling_seconds=int(merged.get("timeouts", {}).get("docling", {}).get("seconds", 20)),
+                ocr_seconds=int(merged.get("timeouts", {}).get("ocr", {}).get("seconds", 12)),
+                layout_seconds=int(merged.get("timeouts", {}).get("layout", {}).get("seconds", 8)),
+                doc_cap_seconds=int(merged.get("timeouts", {}).get("doc", {}).get("cap_seconds", 240)),
+            ),
+            concurrency=ConcurrencyConfig(
+                pages=int(merged.get("concurrency", {}).get("pages", 2))
+            ),
             parallel=ParallelConfig(workers=int(merged.get("parallel", {}).get("workers", 3))),
             cache=CacheConfig(dir=str(merged.get("cache", {}).get("dir", "/cache/{doc_sha}/{page_no}/{dpi}"))),
         )
@@ -178,6 +208,4 @@ DEFAULT_CONFIG = PipelineConfig()
 
 def resolve_cache_path(config: PipelineConfig, doc_sha: str, page_no: int, dpi: int) -> Path:
     template = config.cache.dir
-    return Path(
-        template.format(doc_sha=doc_sha, page_no=page_no, dpi=dpi)
-    ).expanduser().resolve()
+    return Path(template.format(doc_sha=doc_sha, page_no=page_no, dpi=dpi)).expanduser().resolve()

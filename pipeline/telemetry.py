@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .ocr import OCRDecision
 from .triage import PageTriageSummary
@@ -26,6 +26,18 @@ class Telemetry:
     soft_boundaries: int = 0
     flags: List[str] = field(default_factory=list)
     extra_metrics: Dict[str, int] = field(default_factory=dict)
+    pages: int = 0
+    doc_time_ms: float = 0.0
+    docling_pages: int = 0
+    ocr_pages_cpu: int = 0
+    ocr_pages_gpu: int = 0
+    emitted_chunks: int = 0
+    fallbacks_used: Dict[str, int] = field(
+        default_factory=lambda: {"docling_fail": 0, "ocr": 0, "degraded": 0}
+    )
+    first_error_code: Optional[str] = None
+    per_page_rows: List[Dict[str, object]] = field(default_factory=list)
+    stage_timings: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -43,6 +55,19 @@ class Telemetry:
             "soft_boundaries": self.soft_boundaries,
             "flags": self.flags,
             "extra_metrics": self.extra_metrics,
+            "summary": {
+                "pages": self.pages,
+                "doc_time_ms": int(self.doc_time_ms),
+                "docling_pages": self.docling_pages,
+                "ocr_pages_cpu": self.ocr_pages_cpu,
+                "ocr_pages_gpu": self.ocr_pages_gpu,
+                "layout_pages": len(self.layout_pages),
+                "emitted_chunks": self.emitted_chunks,
+                "fallbacks_used": self.fallbacks_used,
+                "first_error_code": self.first_error_code,
+            },
+            "per_page": self.per_page_rows,
+            "stage_timings": self.stage_timings,
             "decisions": [
                 {
                     "page": d.page_number,
@@ -67,9 +92,34 @@ class Telemetry:
 
     def flag(self, code: str) -> None:
         self.flags.append(code)
+        if self.first_error_code is None:
+            self.first_error_code = code
+
+    def record_per_page(
+        self,
+        *,
+        page: int,
+        stage_used: str,
+        latency_ms: float,
+        text_len: int,
+        fallback_applied: bool,
+        error_codes: List[str],
+    ) -> None:
+        self.per_page_rows.append(
+            {
+                "doc_id": self.doc_id,
+                "page": page,
+                "stage_used": stage_used,
+                "latency_ms": int(latency_ms),
+                "text_len": text_len,
+                "fallback_applied": fallback_applied,
+                "error_codes": list(error_codes),
+            }
+        )
 
 
 def record_triage(summary: PageTriageSummary, started_at: float) -> Telemetry:
     telemetry = Telemetry(doc_id=summary.doc_id, file_name=summary.file_name)
     telemetry.triage_latency_ms = (time.time() - started_at) * 1000
+    telemetry.pages = len(summary.pages)
     return telemetry

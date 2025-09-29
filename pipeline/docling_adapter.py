@@ -51,7 +51,7 @@ def _normalise_heading_level(level: Optional[int]) -> Optional[int]:
 def run_docling(pdf_bytes: bytes, triage: Iterable[PageTriageResult]) -> List[DoclingBlock]:
     converter_cls = _load_docling()
     if converter_cls is None:
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     # We intentionally defer imports and heavy work until needed so ZeroGPU
     # deployments only pay for Docling when a document is processed.
@@ -59,12 +59,12 @@ def run_docling(pdf_bytes: bytes, triage: Iterable[PageTriageResult]) -> List[Do
         converter = converter_cls()
     except Exception as exc:  # fallback to triage text when Docling fails
         logger.exception("Docling initialisation failed: %s", exc)
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     doc_input = _build_docling_input(pdf_bytes)
     if doc_input is None:
         logger.warning("Docling DocumentInput helpers unavailable; using triage fallback")
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     try:
         if hasattr(converter, "convert"):
@@ -73,21 +73,21 @@ def run_docling(pdf_bytes: bytes, triage: Iterable[PageTriageResult]) -> List[Do
             result = converter.convert_bytes(pdf_bytes, "application/pdf")  # pragma: no cover
         else:
             logger.warning("Docling converter has no supported convert method")
-            return _fallback_blocks(triage)
+            return fallback_blocks(triage)
     except Exception as exc:
         logger.warning("Docling conversion failed: %s", exc)
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     document = getattr(result, "document", None)
     if document is None:
         logger.warning("Docling result missing document attribute")
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     try:
         md_blocks = document.export_structured()  # type: ignore[attr-defined]
     except Exception as exc:
         logger.warning("Docling structured export failed: %s", exc)
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     blocks: List[DoclingBlock] = []
     for md_block in md_blocks or []:
@@ -116,7 +116,7 @@ def run_docling(pdf_bytes: bytes, triage: Iterable[PageTriageResult]) -> List[Do
         )
 
     if not blocks:
-        return _fallback_blocks(triage)
+        return fallback_blocks(triage)
 
     return blocks
 
@@ -160,7 +160,7 @@ def _build_docling_input(pdf_bytes: bytes) -> Optional[Any]:  # pragma: no cover
     return None
 
 
-def _fallback_blocks(triage: Iterable[PageTriageResult]) -> List[DoclingBlock]:
+def fallback_blocks(triage: Iterable[PageTriageResult]) -> List[DoclingBlock]:
     blocks: List[DoclingBlock] = []
     for page in triage:
         if not page.text.strip():

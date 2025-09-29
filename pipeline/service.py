@@ -10,12 +10,13 @@ from typing import List
 
 from .chunker import Chunk, chunk_blocks
 from .config import PipelineConfig, DEFAULT_CONFIG
-from .docling_adapter import run_docling
+from .docling_adapter import run_docling, fallback_blocks
 from .layout_rescue import apply_layout_rescue, plan_layout_rescue
 from .normalize import Block, normalise_blocks
 from .ocr import apply_ocr, plan_ocr
 from .telemetry import Telemetry, record_triage
 from .triage import triage_document
+from .watchdog import Watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -93,20 +94,79 @@ class PipelineService:
 
     def process_pdf(self, pdf_path: str) -> PipelineResult:
         logger.info("Processing document: %s", pdf_path)
-        start_time = time.time()
+        doc_start = time.time()
+        triage_start = time.time()
         triage_summary = triage_document(pdf_path, self.config)
-        telemetry = record_triage(triage_summary, start_time)
+        telemetry = record_triage(triage_summary, triage_start)
+        telemetry.stage_timings["triage_ms"] = telemetry.triage_latency_ms
         ocr_decisions = plan_ocr(triage_summary.pages, self.config)
         telemetry.ocr_decisions = ocr_decisions
-        triage_pages = apply_ocr(list(triage_summary.pages), ocr_decisions)
+        ocr_watchdog = Watchdog("ocr", self.config.timeouts.ocr_seconds)
+        triage_pages, ocr_latency, ocr_timed_out = ocr_watchdog.run(
+            lambda: apply_ocr(list(triage_summary.pages), ocr_decisions),
+            on_timeout=lambda: list(triage_summary.pages),
+        )
+        telemetry.stage_timings["ocr_ms"] = ocr_latency
+        if ocr_timed_out:
+            telemetry.fallbacks_used["ocr"] = telemetry.fallbacks_used.get("ocr", 0) + 1
+            telemetry.flag("OCR_TIMEOUT")
         triage_summary.pages = list(triage_pages)
+        telemetry.ocr_pages_cpu = sum(
+            1 for d in ocr_decisions if d.should_ocr and d.engine != "nougat"
+        )
+        telemetry.ocr_pages_gpu = sum(
+            1 for d in ocr_decisions if d.should_ocr and d.engine == "nougat"
+        )
         layout_decisions = plan_layout_rescue(triage_pages)
         telemetry.layout_pages = [d.page_number for d in layout_decisions if d.should_rescue]
-        docling_blocks = run_docling(triage_summary.pdf_bytes, triage_pages)
-        rescued_blocks = apply_layout_rescue(docling_blocks, layout_decisions)
+        docling_watchdog = Watchdog("docling", self.config.timeouts.docling_seconds)
+        docling_blocks, docling_latency, docling_timed_out = docling_watchdog.run(
+            lambda: run_docling(triage_summary.pdf_bytes, triage_pages),
+            on_timeout=lambda: fallback_blocks(triage_pages),
+        )
+        telemetry.stage_timings["docling_ms"] = docling_latency
+        if docling_timed_out:
+            telemetry.fallbacks_used["docling_fail"] = telemetry.fallbacks_used.get(
+                "docling_fail", 0
+            ) + 1
+            telemetry.flag("DOCLING_TIMEOUT")
+        telemetry.docling_pages = len({block.page_number for block in docling_blocks})
+        layout_watchdog = Watchdog("layout", self.config.timeouts.layout_seconds)
+        rescued_blocks, layout_latency, layout_timed_out = layout_watchdog.run(
+            lambda: apply_layout_rescue(docling_blocks, layout_decisions),
+            on_timeout=lambda: docling_blocks,
+        )
+        telemetry.stage_timings["layout_ms"] = layout_latency
+        if layout_timed_out:
+            telemetry.flag("LAYOUT_TIMEOUT")
         blocks = normalise_blocks(triage_summary.doc_id, rescued_blocks, self.config, telemetry)
         chunks = chunk_blocks(triage_summary.doc_id, blocks, self.config, telemetry)
         telemetry.chunk_count = len(chunks)
+        telemetry.emitted_chunks = len(chunks)
+        telemetry.doc_time_ms = (time.time() - doc_start) * 1000.0
+        if telemetry.doc_time_ms > self.config.timeouts.doc_cap_seconds * 1000:
+            telemetry.flag("DOC_TIMEOUT")
+
+        docling_page_numbers = {
+            block.page_number for block in docling_blocks if block.source_stage == "docling"
+        }
+        ocr_pages = {decision.page_number for decision in ocr_decisions if decision.should_ocr}
+        for page in triage_summary.pages:
+            if page.page_number in ocr_pages:
+                page.stage_used = "ocr"
+            elif page.page_number in docling_page_numbers:
+                page.stage_used = "docling"
+            else:
+                page.stage_used = "triage"
+                page.fallback_applied = True
+            telemetry.record_per_page(
+                page=page.page_number,
+                stage_used=page.stage_used,
+                latency_ms=page.latency_ms,
+                text_len=len(page.text),
+                fallback_applied=page.fallback_applied,
+                error_codes=page.error_codes or page.errors,
+            )
         triage_rows = triage_summary.to_csv_rows()
         return PipelineResult(
             doc_id=triage_summary.doc_id,

@@ -5,36 +5,16 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
 
-try:  # pragma: no cover - optional dependency
-    import tiktoken
-except Exception:  # pragma: no cover - fall back to whitespace counting
-    tiktoken = None  # type: ignore
-
 from .config import PipelineConfig
 from .ids import make_chunk_id
 from .normalize import Block
 from .segmentor import SegmentChunk, Segmentor
+from .degraded_chunker import build_degraded_segment_chunks
+from .token_utils import count_tokens
 
 logger = logging.getLogger(__name__)
 
 BOUNDARY_RE = re.compile(r"^(references|appendix|glossary|index|chapter\s+|part\s+)", re.IGNORECASE)
-
-if tiktoken is not None:  # pragma: no cover - heavy dependency
-    try:
-        _ENCODER = tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        _ENCODER = None
-else:  # pragma: no cover
-    _ENCODER = None
-
-
-def count_tokens(text: str) -> int:
-    if not text:
-        return 0
-    if _ENCODER is not None:  # pragma: no cover - depends on tiktoken
-        return len(_ENCODER.encode(text))
-    return max(1, len(text.split()))
-
 
 @dataclass(slots=True)
 class Chunk:
@@ -117,5 +97,15 @@ def chunk_blocks(
     tail = segmentor.finish()
     if tail:
         chunks.extend(_convert_chunks(doc_id, tail))
+
+    if not chunks:
+        degraded_payloads = build_degraded_segment_chunks(doc_id, blocks, config)
+        if degraded_payloads:
+            if hasattr(telemetry, "fallbacks_used"):
+                telemetry.fallbacks_used["degraded"] = telemetry.fallbacks_used.get(
+                    "degraded", 0
+                ) + 1
+            telemetry.flag("DEGRADED_CHUNKER")
+            chunks.extend(_convert_chunks(doc_id, degraded_payloads))
 
     return chunks
