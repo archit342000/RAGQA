@@ -265,34 +265,51 @@ class Segmentor:
         return [self._build_chunk_from_plan(plan, segment) for plan in plans]
 
     def _build_chunk_from_plan(self, plan: FlowChunkPlan, segment: _Segment) -> SegmentChunk:
-        evidence_spans: List[dict] = []
+        evidence_map: dict[str, dict] = {}
+        evidence_order: List[str] = []
         pages = set()
         combined = ""
         notes = set()
-        for block in plan.blocks:
-            snippet = (block.text or "").strip()
+        last_block_id: str | None = None
+        for fragment in plan.blocks:
+            block = fragment.block
+            snippet = fragment.text.strip()
             if not snippet:
                 continue
             if combined:
-                combined += "\n\n"
+                if fragment.is_continuation or block.block_id == last_block_id:
+                    combined += " "
+                else:
+                    combined += "\n\n"
             start = len(combined)
             combined += snippet
             end = len(combined)
-            evidence_spans.append({
-                "para_block_id": block.block_id,
-                "start": start,
-                "end": end,
-            })
+            if block.block_id not in evidence_map:
+                evidence_order.append(block.block_id)
+                evidence_map[block.block_id] = {
+                    "para_block_id": block.block_id,
+                    "start": start,
+                    "end": end,
+                }
+            else:
+                evidence_map[block.block_id]["end"] = end
             pages.add(block.page)
             if block.source.get("notes"):
                 notes.add(block.source.get("notes"))
+            last_block_id = block.block_id
+        evidence_spans = [evidence_map[bid] for bid in evidence_order]
         token_count = self.token_counter(combined)
         ocr_pages = {
-            block.page
-            for block in plan.blocks
-            if block.source.get("stage") == "ocr"
+            fragment.block.page
+            for fragment in plan.blocks
+            if fragment.block.source.get("stage") == "ocr"
         }
-        rescued = any(block.source.get("stage") == "layout" for block in plan.blocks)
+        rescued = any(
+            fragment.block.source.get("stage") == "layout" for fragment in plan.blocks
+        )
+        if plan.forced_split:
+            notes.add("forced-split")
+            self.telemetry.flag("FLOW_FORCED_SPLIT")
         chunk = SegmentChunk(
             heading_path=list(segment.heading_path),
             text=combined,
@@ -306,7 +323,7 @@ class Segmentor:
                 "notes": ",".join(sorted(notes)) if notes else "",
             },
             aux_groups={"sidecars": [], "footnotes": [], "other": []},
-            notes=list(segment.notes),
+            notes=list(segment.notes.union(notes)),
             limits={
                 "target": self.config.flow.limits.target,
                 "soft": self.config.flow.limits.soft,

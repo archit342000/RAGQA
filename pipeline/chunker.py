@@ -154,6 +154,25 @@ def _record_flow_metrics(chunks: Sequence[Chunk], telemetry) -> None:
     if telemetry is None:
         return
     for chunk in chunks:
+        if hasattr(telemetry, "flow_chunk_count"):
+            telemetry.flow_chunk_count += 1
+            telemetry.flow_chunk_tokens_sum += chunk.token_count
+            telemetry.flow_overflow_sum += chunk.flow_overflow
+            unique_blocks = {
+                span.get("para_block_id")
+                for span in chunk.evidence_spans
+                if span.get("para_block_id") is not None
+            }
+            telemetry.flow_block_sum += len(unique_blocks)
+            limits = chunk.limits or {}
+            soft_limit = limits.get("soft") or 0
+            hard_limit = limits.get("hard") or 0
+            if soft_limit and chunk.token_count > soft_limit:
+                telemetry.flow_soft_exceed_count += 1
+            if hard_limit and chunk.token_count >= hard_limit:
+                telemetry.flow_hard_count += 1
+            if chunk.aux_in_followup and not chunk.text:
+                telemetry.flow_aux_followup_count += 1
         telemetry.inc("flow_overflow_tokens", chunk.flow_overflow)
         if chunk.flow_overflow > 0:
             telemetry.inc("flow_overflow_chunks")

@@ -42,3 +42,26 @@ def test_flow_chunk_plan_allows_boundary_overflow() -> None:
     first = plans[0]
     assert len(first.blocks) >= 2
     assert first.closed_at in {"H1", "EOF"}
+
+
+def test_flow_chunk_plan_splits_long_paragraph() -> None:
+    config = PipelineConfig.from_mapping(
+        {
+            "flow": {
+                "limits": {"target": 6, "soft": 8, "hard": 10, "min": 3},
+                "boundary_slack_tokens": 2,
+            }
+        }
+    )
+    text = "Sentence one is lengthy. Sentence two is also quite long. Sentence three keeps going."
+    block = _block(text)
+
+    plans = build_flow_chunk_plan([block], config, lambda value: len(value.split()))
+
+    assert plans, "Plan should exist"
+    total_fragments = sum(len(plan.blocks) for plan in plans)
+    assert total_fragments >= 2
+    assert any(plan.forced_split for plan in plans)
+    for plan in plans:
+        for fragment in plan.blocks:
+            assert fragment.tokens <= config.flow.limits.hard

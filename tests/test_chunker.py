@@ -100,6 +100,7 @@ def test_chunker_splits_long_text() -> None:
 
     chunks = chunk_blocks("doc", blocks, config)
     assert chunks
-    assert chunks[0].flow_overflow > 0
+    assert all(chunk.token_count <= config.flow.limits.hard for chunk in chunks)
+    assert any(chunk.notes and "forced-split" in chunk.notes for chunk in chunks)
     for chunk in chunks:
-        assert chunk.evidence_spans[0]["para_block_id"] == "bp"
+        assert all(span["para_block_id"] == "bp" for span in chunk.evidence_spans)

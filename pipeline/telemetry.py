@@ -40,8 +40,16 @@ class Telemetry:
     per_page_rows: List[Dict[str, object]] = field(default_factory=list)
     stage_timings: Dict[str, float] = field(default_factory=dict)
     filter_relaxed_pages: set[int] = field(default_factory=set)
+    flow_chunk_tokens_sum: int = 0
+    flow_chunk_count: int = 0
+    flow_soft_exceed_count: int = 0
+    flow_hard_count: int = 0
+    flow_aux_followup_count: int = 0
+    flow_overflow_sum: int = 0
+    flow_block_sum: int = 0
 
     def to_dict(self) -> Dict[str, object]:
+        flow_count = max(self.flow_chunk_count, 1)
         return {
             "doc_id": self.doc_id,
             "file_name": self.file_name,
@@ -69,6 +77,15 @@ class Telemetry:
                 "relaxed_filter_pages": len(self.filter_relaxed_pages),
                 "fallbacks_used": self.fallbacks_used,
                 "first_error_code": self.first_error_code,
+            },
+            "flow_aggregates": {
+                "emitted_chunks": self.emitted_chunks,
+                "avg_tokens_per_chunk": self.flow_chunk_tokens_sum / flow_count,
+                "pct_chunks_over_soft": (self.flow_soft_exceed_count / flow_count) * 100.0,
+                "pct_chunks_at_hard": (self.flow_hard_count / flow_count) * 100.0,
+                "pct_aux_followup": (self.flow_aux_followup_count / flow_count) * 100.0,
+                "avg_flow_overflow": self.flow_overflow_sum / flow_count,
+                "avg_blocks_per_chunk": self.flow_block_sum / flow_count,
             },
             "per_page": self.per_page_rows,
             "stage_timings": self.stage_timings,
