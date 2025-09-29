@@ -103,6 +103,11 @@ aux.segment0.min_chars=150
 aux.segment0.font_percentile=0.80
 aux.superscript.y_offset_xheight=0.20
 aux.soft_boundary.max_deferred_pages=5
+flow.limits.target=1600
+flow.limits.soft=2000
+flow.limits.hard=2400
+flow.limits.min=900
+flow.boundary_slack_tokens=200
 ```
 
 ## Testing

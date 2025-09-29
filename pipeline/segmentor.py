@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-import re
-
 from .config import PipelineConfig
 from .normalize import Block
+from .flow_chunker import FlowChunkPlan, build_flow_chunk_plan
 
 
 @dataclass(slots=True)
@@ -20,6 +19,12 @@ class SegmentChunk:
     quality: dict
     aux_groups: dict
     notes: List[str]
+    limits: dict
+    flow_overflow: int
+    closed_at_boundary: str
+    aux_in_followup: bool
+    link_prev_index: Optional[int]
+    link_next_index: Optional[int]
 
 
 @dataclass(slots=True)
@@ -199,138 +204,122 @@ class Segmentor:
                     sidecars=[],
                     quality={"ocr_pages": 0, "rescued": False, "notes": ""},
                     aux_groups={"sidecars": [], "footnotes": [], "other": []},
-                    notes=[],
+                    notes=list(segment.notes),
+                    limits={
+                        "target": self.config.flow.limits.target,
+                        "soft": self.config.flow.limits.soft,
+                        "hard": self.config.flow.limits.hard,
+                        "min": self.config.flow.limits.minimum,
+                    },
+                    flow_overflow=0,
+                    closed_at_boundary="EOF",
+                    aux_in_followup=False,
+                    link_prev_index=None,
+                    link_next_index=None,
                 )
             ]
-        aux_groups, legacy_sidecars, aux_notes = self._group_aux(segment.aux_buffer)
+        aux_groups, legacy_sidecars, aux_notes, aux_tokens = self._group_aux(
+            segment.aux_buffer
+        )
         last_chunk = chunks[-1]
         last_chunk.sidecars.extend(legacy_sidecars)
-        merged_groups = last_chunk.aux_groups
-        merged_groups.setdefault("sidecars", []).extend(aux_groups["sidecars"])
-        merged_groups.setdefault("footnotes", []).extend(aux_groups["footnotes"])
-        merged_groups.setdefault("other", []).extend(aux_groups["other"])
         if soft or "soft-flush" in segment.notes:
-            last_chunk.notes.append("soft-flush")
+            if "soft-flush" not in last_chunk.notes:
+                last_chunk.notes.append("soft-flush")
         last_chunk.notes.extend(aux_notes)
+        hard_limit = self.config.flow.limits.hard
+        if aux_tokens and last_chunk.token_count + aux_tokens > hard_limit:
+            aux_chunk = SegmentChunk(
+                heading_path=list(segment.heading_path),
+                text="",
+                page_span=list(last_chunk.page_span),
+                token_count=0,
+                evidence_spans=[],
+                sidecars=[],
+                quality={"ocr_pages": 0, "rescued": False, "notes": ""},
+                aux_groups=aux_groups,
+                notes=list(segment.notes),
+                limits=last_chunk.limits,
+                flow_overflow=0,
+                closed_at_boundary="EOF",
+                aux_in_followup=True,
+                link_prev_index=len(chunks) - 1,
+                link_next_index=None,
+            )
+            last_chunk.aux_in_followup = True
+            last_chunk.link_next_index = len(chunks)
+            chunks.append(aux_chunk)
+        else:
+            merged_groups = last_chunk.aux_groups
+            merged_groups.setdefault("sidecars", []).extend(aux_groups["sidecars"])
+            merged_groups.setdefault("footnotes", []).extend(aux_groups["footnotes"])
+            merged_groups.setdefault("other", []).extend(aux_groups["other"])
         self.telemetry.inc("segments")
         return chunks
 
     # ---- chunk creation ---------------------------------------------
     def _pack_main_chunks(self, segment: _Segment) -> List[SegmentChunk]:
-        chunks: List[SegmentChunk] = []
         if not segment.main_blocks:
-            return chunks
-        target = self.config.chunk.tokens.target
-        maximum = self.config.chunk.tokens.maximum
-
-        current_text: List[str] = []
-        current_blocks: List[Tuple[Block, str]] = []
-
-        def _flush_current() -> None:
-            if not current_blocks:
-                return
-            text = "\n\n".join(part for _, part in current_blocks if part.strip())
-            pages = {blk.page for blk, _ in current_blocks}
-            evidence_spans: List[dict] = []
-            cursor = 0
-            combined_text = ""
-            for blk, part in current_blocks:
-                snippet = part.strip()
-                if not snippet:
-                    continue
-                if combined_text:
-                    combined_text += "\n\n"
-                start = len(combined_text)
-                combined_text += snippet
-                end = len(combined_text)
-                evidence_spans.append({
-                    "para_block_id": blk.block_id,
-                    "start": start,
-                    "end": end,
-                })
-            ocr_pages = {
-                blk.page
-                for blk, _ in current_blocks
-                if blk.source.get("stage") == "ocr"
-            }
-            rescued = any(blk.source.get("stage") == "layout" for blk, _ in current_blocks)
-            notes = {
-                blk.source.get("notes")
-                for blk, _ in current_blocks
-                if blk.source.get("notes")
-            }
-            chunk = SegmentChunk(
-                heading_path=list(segment.heading_path),
-                text=combined_text,
-                page_span=[min(pages), max(pages)] if pages else [segment.start_page, segment.last_page],
-                token_count=self.token_counter(combined_text),
-                evidence_spans=evidence_spans,
-                sidecars=[],
-                quality={
-                    "ocr_pages": len(ocr_pages),
-                    "rescued": rescued,
-                    "notes": ",".join(sorted(notes)) if notes else "",
-                },
-                aux_groups={"sidecars": [], "footnotes": [], "other": []},
-                notes=[],
-            )
-            chunks.append(chunk)
-            current_blocks.clear()
-            current_text.clear()
-
-        for block in segment.main_blocks:
-            if not block.text.strip():
-                continue
-            segments = self._split_text(block.text)
-            for piece in segments:
-                candidate = list(current_blocks)
-                candidate.append((block, piece))
-                text = "\n\n".join(part for _, part in candidate if part.strip())
-                tokens = self.token_counter(text)
-                if tokens > maximum and current_blocks:
-                    _flush_current()
-                    candidate = [(block, piece)]
-                    text = piece.strip()
-                    tokens = self.token_counter(text)
-                current_blocks = candidate
-                if tokens >= target:
-                    _flush_current()
-        if current_blocks:
-            _flush_current()
-        return chunks
-
-    def _split_text(self, text: str) -> List[str]:
-        if not text:
             return []
-        maximum = self.config.chunk.tokens.maximum
-        queue: List[str] = [segment for segment in text.split("\n\n") if segment.strip()]
-        if not queue:
-            queue = [text.strip()]
-        result: List[str] = []
-        while queue:
-            current = queue.pop(0).strip()
-            if not current:
+        plans = build_flow_chunk_plan(segment.main_blocks, self.config, self.token_counter)
+        return [self._build_chunk_from_plan(plan, segment) for plan in plans]
+
+    def _build_chunk_from_plan(self, plan: FlowChunkPlan, segment: _Segment) -> SegmentChunk:
+        evidence_spans: List[dict] = []
+        pages = set()
+        combined = ""
+        notes = set()
+        for block in plan.blocks:
+            snippet = (block.text or "").strip()
+            if not snippet:
                 continue
-            if self.token_counter(current) <= maximum:
-                result.append(current)
-                continue
-            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", current) if s.strip()]
-            if len(sentences) > 1:
-                buffer = ""
-                for sentence in sentences:
-                    candidate = f"{buffer} {sentence}".strip() if buffer else sentence
-                    if self.token_counter(candidate) > maximum and buffer:
-                        queue.append(buffer.strip())
-                        buffer = sentence
-                    else:
-                        buffer = candidate
-                if buffer:
-                    queue.append(buffer.strip())
-                continue
-            words = current.split()
-            for idx in range(0, len(words), maximum):
-                queue.append(" ".join(words[idx : idx + maximum]).strip())
-        return result
+            if combined:
+                combined += "\n\n"
+            start = len(combined)
+            combined += snippet
+            end = len(combined)
+            evidence_spans.append({
+                "para_block_id": block.block_id,
+                "start": start,
+                "end": end,
+            })
+            pages.add(block.page)
+            if block.source.get("notes"):
+                notes.add(block.source.get("notes"))
+        token_count = self.token_counter(combined)
+        ocr_pages = {
+            block.page
+            for block in plan.blocks
+            if block.source.get("stage") == "ocr"
+        }
+        rescued = any(block.source.get("stage") == "layout" for block in plan.blocks)
+        chunk = SegmentChunk(
+            heading_path=list(segment.heading_path),
+            text=combined,
+            page_span=[min(pages), max(pages)] if pages else [segment.start_page, segment.last_page],
+            token_count=token_count,
+            evidence_spans=evidence_spans,
+            sidecars=[],
+            quality={
+                "ocr_pages": len(ocr_pages),
+                "rescued": rescued,
+                "notes": ",".join(sorted(notes)) if notes else "",
+            },
+            aux_groups={"sidecars": [], "footnotes": [], "other": []},
+            notes=list(segment.notes),
+            limits={
+                "target": self.config.flow.limits.target,
+                "soft": self.config.flow.limits.soft,
+                "hard": self.config.flow.limits.hard,
+                "min": self.config.flow.limits.minimum,
+            },
+            flow_overflow=max(0, token_count - self.config.flow.limits.target),
+            closed_at_boundary=plan.closed_at,
+            aux_in_followup=False,
+            link_prev_index=None,
+            link_next_index=None,
+        )
+        return chunk
 
     def _group_aux(self, aux_blocks: Iterable[Block]):
         sidecars: List[dict] = []
@@ -338,6 +327,7 @@ class Segmentor:
         footnotes: List[dict] = []
         other: List[dict] = []
         notes: List[str] = []
+        text_samples: List[str] = []
         for block in aux_blocks:
             text = (block.text or "").strip()
             subtype = block.aux_subtype or "other"
@@ -354,15 +344,25 @@ class Segmentor:
                 if subtype == "caption" and block.parent_block_id is None:
                     notes.append("orphan-caption")
                 self.telemetry.inc("aux_emitted")
+                text_samples.append(text)
                 continue
             if subtype == "footnote":
                 footnotes.append({"ref_id": block.block_id, "text": text})
                 self.telemetry.inc("aux_emitted")
+                text_samples.append(text)
                 continue
             other.append({"aux_subtype": subtype, "text": text})
             self.telemetry.inc("aux_emitted")
+            if text:
+                text_samples.append(text)
+        aux_tokens = (
+            self.token_counter("\n\n".join(sample for sample in text_samples if sample))
+            if text_samples
+            else 0
+        )
         return (
             {"sidecars": sidecars, "footnotes": footnotes, "other": other},
             legacy_sidecars,
             notes,
+            aux_tokens,
         )

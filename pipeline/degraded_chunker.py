@@ -65,6 +65,17 @@ def build_degraded_segment_chunks(
             quality=quality,
             aux_groups={"sidecars": [], "footnotes": [], "other": []},
             notes=["degraded"],
+            limits={
+                "target": config.flow.limits.target,
+                "soft": config.flow.limits.soft,
+                "hard": config.flow.limits.hard,
+                "min": config.flow.limits.minimum,
+            },
+            flow_overflow=max(0, tokens - config.flow.limits.target),
+            closed_at_boundary="EOF",
+            aux_in_followup=False,
+            link_prev_index=None,
+            link_next_index=None,
         )
         chunks.append(chunk)
         buffer = []

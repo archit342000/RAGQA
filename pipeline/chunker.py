@@ -29,6 +29,12 @@ class Chunk:
     quality: dict
     aux_groups: dict
     notes: str | None
+    limits: dict
+    flow_overflow: int
+    closed_at_boundary: str
+    aux_in_followup: bool
+    link_prev: str | None
+    link_next: str | None
 
 
 class _NullTelemetry:
@@ -40,8 +46,9 @@ class _NullTelemetry:
 
 
 def _convert_chunks(doc_id: str, payloads: Iterable[SegmentChunk]) -> List[Chunk]:
+    payload_list = list(payloads)
     chunks: List[Chunk] = []
-    for payload in payloads:
+    for payload in payload_list:
         notes = sorted(set(payload.notes))
         chunk = Chunk(
             chunk_id=make_chunk_id(),
@@ -59,8 +66,23 @@ def _convert_chunks(doc_id: str, payloads: Iterable[SegmentChunk]) -> List[Chunk
                 "other": list(payload.aux_groups.get("other", [])),
             },
             notes=",".join(notes) if notes else None,
+            limits=dict(getattr(payload, "limits", {})),
+            flow_overflow=getattr(payload, "flow_overflow", 0),
+            closed_at_boundary=getattr(payload, "closed_at_boundary", "EOF"),
+            aux_in_followup=getattr(payload, "aux_in_followup", False),
+            link_prev=None,
+            link_next=None,
         )
         chunks.append(chunk)
+
+    id_lookup = {idx: chunk.chunk_id for idx, chunk in enumerate(chunks)}
+    for idx, payload in enumerate(payload_list):
+        prev_idx = getattr(payload, "link_prev_index", None)
+        next_idx = getattr(payload, "link_next_index", None)
+        if prev_idx is not None and prev_idx in id_lookup:
+            chunks[idx].link_prev = id_lookup[prev_idx]
+        if next_idx is not None and next_idx in id_lookup:
+            chunks[idx].link_next = id_lookup[next_idx]
     return chunks
 
 
@@ -86,7 +108,9 @@ def chunk_blocks(
         degraded_payloads = build_degraded_segment_chunks(doc_id, blocks, config)
         if telemetry is not None:
             telemetry.flag("DEGRADED_PATH")
-        return _convert_chunks(doc_id, degraded_payloads)
+        converted = _convert_chunks(doc_id, degraded_payloads)
+        _record_flow_metrics(converted, telemetry)
+        return converted
     segmentor = Segmentor(doc_id, config, telemetry, count_tokens)
     chunks: List[Chunk] = []
 
@@ -94,14 +118,20 @@ def chunk_blocks(
         if _is_hard_boundary(block):
             flushed = segmentor.boundary(hard=True)
             if flushed:
-                chunks.extend(_convert_chunks(doc_id, flushed))
+                converted = _convert_chunks(doc_id, flushed)
+                _record_flow_metrics(converted, telemetry)
+                chunks.extend(converted)
         emitted = segmentor.add_block(block)
         if emitted:
-            chunks.extend(_convert_chunks(doc_id, emitted))
+            converted = _convert_chunks(doc_id, emitted)
+            _record_flow_metrics(converted, telemetry)
+            chunks.extend(converted)
 
     tail = segmentor.finish()
     if tail:
-        chunks.extend(_convert_chunks(doc_id, tail))
+        converted = _convert_chunks(doc_id, tail)
+        _record_flow_metrics(converted, telemetry)
+        chunks.extend(converted)
 
     if not chunks:
         degraded_payloads = build_degraded_segment_chunks(doc_id, blocks, config)
@@ -111,9 +141,26 @@ def chunk_blocks(
                     "degraded", 0
                 ) + 1
             telemetry.flag("DEGRADED_CHUNKER")
-            chunks.extend(_convert_chunks(doc_id, degraded_payloads))
+            converted = _convert_chunks(doc_id, degraded_payloads)
+            _record_flow_metrics(converted, telemetry)
+            chunks.extend(converted)
 
+    if hasattr(telemetry, "emitted_chunks"):
+        telemetry.inc("emitted_chunks", len(chunks))
     return chunks
+
+
+def _record_flow_metrics(chunks: Sequence[Chunk], telemetry) -> None:
+    if telemetry is None:
+        return
+    for chunk in chunks:
+        telemetry.inc("flow_overflow_tokens", chunk.flow_overflow)
+        if chunk.flow_overflow > 0:
+            telemetry.inc("flow_overflow_chunks")
+        telemetry.inc(f"closed_at_{chunk.closed_at_boundary.lower()}")
+        telemetry.inc("aux_sidecars_count", len(chunk.aux_groups.get("sidecars", [])))
+        telemetry.inc("aux_footnotes_count", len(chunk.aux_groups.get("footnotes", [])))
+        telemetry.inc("aux_other_count", len(chunk.aux_groups.get("other", [])))
 
 
 def _should_use_degraded(blocks: Sequence[Block]) -> bool:

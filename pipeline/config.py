@@ -30,6 +30,15 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
         "tokens": {"target": 1000, "min": 500, "max": 1400},
         "degraded": {"target": 1000, "min": 900, "max": 1100},
     },
+    "flow": {
+        "limits": {
+            "target": 1600,
+            "soft": 2000,
+            "hard": 2400,
+            "min": 900,
+        },
+        "boundary_slack_tokens": 200,
+    },
     "aux": {
         "header_footer": {"repetition_threshold": 0.50, "dropcap_max_fraction": 0.30},
         "y_band": {"pct": 0.03},
@@ -94,6 +103,20 @@ class ChunkConfig:
 
 
 @dataclass
+class FlowLimitsConfig:
+    target: int = 1600
+    soft: int = 2000
+    hard: int = 2400
+    minimum: int = 900
+
+
+@dataclass
+class FlowConfig:
+    limits: FlowLimitsConfig = field(default_factory=FlowLimitsConfig)
+    boundary_slack_tokens: int = 200
+
+
+@dataclass
 class AuxHeaderFooterConfig:
     repetition_threshold: float = 0.50
     dropcap_max_fraction: float = 0.30
@@ -146,6 +169,7 @@ class PipelineConfig:
     extractor: ExtractorVoteConfig = field(default_factory=ExtractorVoteConfig)
     raster: RasterConfig = field(default_factory=RasterConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
+    flow: FlowConfig = field(default_factory=FlowConfig)
     aux: AuxConfig = field(default_factory=AuxConfig)
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
@@ -213,6 +237,37 @@ class PipelineConfig:
                 ),
                 degraded_maximum=int(
                     merged.get("chunk", {}).get("degraded", {}).get("max", 1100)
+                ),
+            ),
+            flow=FlowConfig(
+                limits=FlowLimitsConfig(
+                    target=int(
+                        merged.get("flow", {})
+                        .get("limits", {})
+                        .get("target", CONFIG_DEFAULTS["flow"]["limits"]["target"])
+                    ),
+                    soft=int(
+                        merged.get("flow", {})
+                        .get("limits", {})
+                        .get("soft", CONFIG_DEFAULTS["flow"]["limits"]["soft"])
+                    ),
+                    hard=int(
+                        merged.get("flow", {})
+                        .get("limits", {})
+                        .get("hard", CONFIG_DEFAULTS["flow"]["limits"]["hard"])
+                    ),
+                    minimum=int(
+                        merged.get("flow", {})
+                        .get("limits", {})
+                        .get("min", CONFIG_DEFAULTS["flow"]["limits"]["min"])
+                    ),
+                ),
+                boundary_slack_tokens=int(
+                    merged.get("flow", {})
+                    .get(
+                        "boundary_slack_tokens",
+                        CONFIG_DEFAULTS["flow"]["boundary_slack_tokens"],
+                    )
                 ),
             ),
             aux=AuxConfig(

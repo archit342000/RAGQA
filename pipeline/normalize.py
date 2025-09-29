@@ -8,6 +8,7 @@ from typing import Iterable, List, Sequence, Tuple, Dict, Any, Optional, TYPE_CH
 import re
 
 from .config import PipelineConfig
+from .token_utils import count_tokens
 
 from .docling_adapter import DoclingBlock
 from .ids import make_block_id
@@ -35,6 +36,9 @@ class Block:
     aux_subtype: str | None
     parent_block_id: str | None
     role_confidence: float
+    safe_split_after: bool
+    boundary_kind: str
+    est_tokens: int
 
 
 def normalise_blocks(
@@ -77,6 +81,13 @@ def normalise_blocks(
             header_footer_stats,
             config,
         )
+        est_tokens = count_tokens(cleaned_text)
+        safe_split_after, boundary_kind = _derive_boundary_metadata(
+            block_type,
+            cleaned_text,
+            block.heading_level,
+            role,
+        )
         prepared.append(
             (
                 block,
@@ -91,6 +102,9 @@ def normalise_blocks(
                     "confidence": confidence,
                     "drop": drop,
                     "flag": flag,
+                    "safe_split_after": safe_split_after,
+                    "boundary_kind": boundary_kind,
+                    "est_tokens": est_tokens,
                 },
             )
         )
@@ -150,6 +164,9 @@ def normalise_blocks(
                 aux_subtype=meta["aux_subtype"],
                 parent_block_id=meta["parent"],
                 role_confidence=meta["confidence"],
+                safe_split_after=meta["safe_split_after"],
+                boundary_kind=meta["boundary_kind"],
+                est_tokens=meta["est_tokens"],
             )
         )
     return normalised
@@ -296,6 +313,39 @@ def _classify_block(
         return role, aux_subtype, parent, confidence, drop, flag
 
     return role, aux_subtype, parent, confidence, drop, flag
+
+
+def _derive_boundary_metadata(
+    block_type: str,
+    text: str,
+    heading_level: Optional[int],
+    role: str,
+) -> Tuple[bool, str]:
+    if role == "auxiliary":
+        return False, "None"
+
+    lowered = block_type.lower()
+    if lowered == "heading":
+        level = heading_level or 3
+        if level <= 1:
+            return True, "H1"
+        if level == 2:
+            return True, "H2"
+        if level == 3:
+            return True, "H3"
+        return True, "Sub"
+    if lowered in {"list", "item"}:
+        return True, "List"
+    if lowered in {"paragraph", "code"}:
+        return True, "Para"
+    if lowered == "footnote":
+        return True, "Sent"
+    if lowered in {"table", "figure", "caption"}:
+        return False, "None"
+    trimmed = text.strip()
+    if trimmed.endswith(('.', '?', '!', ';')):
+        return True, "Sent"
+    return False, "None"
 
 
 def _clean_text(text: str | None) -> str:

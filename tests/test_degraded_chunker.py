@@ -5,6 +5,19 @@ from pipeline.telemetry import Telemetry
 
 
 def make_block(text: str, block_type: str = "paragraph", stage: str = "extractor") -> Block:
+    tokens = len(text.split()) if text else 0
+    if block_type == "heading":
+        boundary_kind = "H1"
+        safe_split = True
+    elif block_type in {"list", "item"}:
+        boundary_kind = "List"
+        safe_split = True
+    elif block_type == "paragraph":
+        boundary_kind = "Para"
+        safe_split = True
+    else:
+        boundary_kind = "None"
+        safe_split = False
     return Block(
         doc_id="doc",
         block_id="b1",
@@ -21,6 +34,9 @@ def make_block(text: str, block_type: str = "paragraph", stage: str = "extractor
         aux_subtype=None,
         parent_block_id=None,
         role_confidence=0.5,
+        safe_split_after=safe_split,
+        boundary_kind=boundary_kind,
+        est_tokens=tokens,
     )
 
 

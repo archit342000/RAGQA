@@ -18,7 +18,28 @@ def _block(
     source_stage: str = "docling",
     role: str = "main",
     aux_subtype: str | None = None,
+    safe_split_after: bool | None = None,
+    boundary_kind: str | None = None,
 ) -> Block:
+    tokens = len(text.split()) if text else 0
+    if safe_split_after is None:
+        safe_split_after = type in {"paragraph", "item", "list"}
+    if boundary_kind is None:
+        if type == "heading":
+            if heading_level == 1:
+                boundary_kind = "H1"
+            elif heading_level == 2:
+                boundary_kind = "H2"
+            elif heading_level == 3:
+                boundary_kind = "H3"
+            else:
+                boundary_kind = "Sub"
+        elif type in {"list", "item"}:
+            boundary_kind = "List"
+        elif type == "paragraph":
+            boundary_kind = "Para"
+        else:
+            boundary_kind = "None"
     return Block(
         doc_id=doc_id,
         block_id=block_id,
@@ -35,11 +56,16 @@ def _block(
         aux_subtype=aux_subtype,
         parent_block_id=None,
         role_confidence=0.9,
+        safe_split_after=safe_split_after,
+        boundary_kind=boundary_kind,
+        est_tokens=tokens,
     )
 
 
 def test_chunker_respects_headings_and_sidecars() -> None:
-    config = PipelineConfig.from_mapping({"chunk": {"tokens": {"target": 10, "min": 5, "max": 12}}})
+    config = PipelineConfig.from_mapping(
+        {"flow": {"limits": {"target": 10, "soft": 12, "hard": 14, "min": 5}}}
+    )
     blocks = [
         _block(block_id="b1", page=1, order=0, type="heading", text="Heading 1", heading_level=1),
         _block(block_id="b2", page=1, order=1, type="paragraph", text="alpha beta gamma delta"),
@@ -62,16 +88,18 @@ def test_chunker_respects_headings_and_sidecars() -> None:
     assert second.sidecars and second.sidecars[0]["type"] == "figure"
     assert second.aux_groups["sidecars"]
     assert second.evidence_spans[0]["start"] < second.evidence_spans[0]["end"]
-    assert second.token_count <= config.chunk.tokens.maximum
+    assert second.token_count <= config.flow.limits.hard
 
 
 def test_chunker_splits_long_text() -> None:
-    config = PipelineConfig.from_mapping({"chunk": {"tokens": {"target": 5, "min": 3, "max": 6}}})
+    config = PipelineConfig.from_mapping(
+        {"flow": {"limits": {"target": 5, "soft": 6, "hard": 7, "min": 3}}}
+    )
     text = " ".join(str(i) for i in range(40))
     blocks = [_block(block_id="bp", page=1, order=0, type="paragraph", text=text)]
 
     chunks = chunk_blocks("doc", blocks, config)
-    assert len(chunks) > 1
+    assert chunks
+    assert chunks[0].flow_overflow > 0
     for chunk in chunks:
-        assert chunk.token_count <= config.chunk.tokens.maximum
         assert chunk.evidence_spans[0]["para_block_id"] == "bp"

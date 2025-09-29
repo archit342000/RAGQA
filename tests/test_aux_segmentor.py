@@ -20,6 +20,13 @@ def _token_counter(text: str) -> int:
 
 
 def _block(block_id: str, text: str, page: int = 1, role: str = "main") -> Block:
+    tokens = len(text.split()) if text else 0
+    if role == "main":
+        safe_split = True
+        boundary = "Para"
+    else:
+        safe_split = False
+        boundary = "None"
     return Block(
         doc_id="doc",
         block_id=block_id,
@@ -36,6 +43,9 @@ def _block(block_id: str, text: str, page: int = 1, role: str = "main") -> Block
         aux_subtype="caption" if role == "auxiliary" else None,
         parent_block_id=None,
         role_confidence=0.9,
+        safe_split_after=safe_split,
+        boundary_kind=boundary,
+        est_tokens=tokens,
     )
 
 
