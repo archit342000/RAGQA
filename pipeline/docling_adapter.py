@@ -123,8 +123,11 @@ def run_docling(pdf_bytes: bytes, triage: Iterable[PageTriageResult]) -> List[Do
 
 def _build_docling_input(pdf_bytes: bytes) -> Optional[Any]:  # pragma: no cover - import heavy
     candidates = [
+        ("docling.models.document", "DocumentInput"),
         ("docling.models.doc", "DocumentInput"),
         ("docling.document", "DocumentInput"),
+        ("docling.document_input", "DocumentInput"),
+        ("docling.document_converter", "DocumentInput"),
     ]
     for module_name, attr in candidates:
         try:
