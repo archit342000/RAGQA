@@ -20,6 +20,13 @@ CONFIG_DEFAULTS: Mapping[str, Any] = {
     "chunk": {
         "tokens": {"target": 1000, "min": 600, "max": 1400},
     },
+    "aux": {
+        "header_footer": {"repetition_threshold": 0.50},
+        "y_band": {"pct": 0.03},
+        "segment0": {"min_chars": 150, "font_percentile": 0.80},
+        "superscript": {"y_offset_xheight": 0.20},
+        "soft_boundary": {"max_deferred_pages": 5},
+    },
     "timeouts": {"page_soft_seconds": 10},
     "parallel": {"workers": 3},
     "cache": {"dir": "/cache/{doc_sha}/{page_no}/{dpi}"},
@@ -57,6 +64,21 @@ class ChunkConfig:
 
 
 @dataclass
+class AuxHeaderFooterConfig:
+    repetition_threshold: float = 0.50
+
+
+@dataclass
+class AuxConfig:
+    header_footer: AuxHeaderFooterConfig = field(default_factory=AuxHeaderFooterConfig)
+    y_band_pct: float = 0.03
+    segment0_min_chars: int = 150
+    segment0_font_percentile: float = 0.80
+    superscript_y_offset_xheight: float = 0.20
+    soft_boundary_max_deferred_pages: int = 5
+
+
+@dataclass
 class TimeoutConfig:
     page_soft_seconds: int = 10
 
@@ -82,6 +104,7 @@ class PipelineConfig:
     ocr: OCRConfig = field(default_factory=OCRConfig)
     raster: RasterConfig = field(default_factory=RasterConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
+    aux: AuxConfig = field(default_factory=AuxConfig)
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
@@ -117,6 +140,32 @@ class PipelineConfig:
                     minimum=int(merged.get("chunk", {}).get("tokens", {}).get("min", 600)),
                     maximum=int(merged.get("chunk", {}).get("tokens", {}).get("max", 1400)),
                 )
+            ),
+            aux=AuxConfig(
+                header_footer=AuxHeaderFooterConfig(
+                    repetition_threshold=float(
+                        merged.get("aux", {})
+                        .get("header_footer", {})
+                        .get("repetition_threshold", 0.50)
+                    )
+                ),
+                y_band_pct=float(merged.get("aux", {}).get("y_band", {}).get("pct", 0.03)),
+                segment0_min_chars=int(
+                    merged.get("aux", {}).get("segment0", {}).get("min_chars", 150)
+                ),
+                segment0_font_percentile=float(
+                    merged.get("aux", {}).get("segment0", {}).get("font_percentile", 0.80)
+                ),
+                superscript_y_offset_xheight=float(
+                    merged.get("aux", {})
+                    .get("superscript", {})
+                    .get("y_offset_xheight", 0.20)
+                ),
+                soft_boundary_max_deferred_pages=int(
+                    merged.get("aux", {})
+                    .get("soft_boundary", {})
+                    .get("max_deferred_pages", 5)
+                ),
             ),
             timeouts=TimeoutConfig(page_soft_seconds=int(merged.get("timeouts", {}).get("page_soft_seconds", 10))),
             parallel=ParallelConfig(workers=int(merged.get("parallel", {}).get("workers", 3))),

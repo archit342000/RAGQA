@@ -45,9 +45,9 @@ The pipeline powers both a CLI (`parse_to_chunks`) and the Spaces Gradio app (`a
 5. **Normalisation** (`pipeline/normalize.py`)
    - Materialise canonical Blocks JSON with deterministic IDs and provenance tags.
 6. **Content-Aware Chunking** (`pipeline/chunker.py`)
-   - Respect heading boundaries first, size targets second.
-   - Attach table/figure/caption sidecars atomically.
-   - Track evidence spans for every paragraph block.
+   - Implements Auxiliary Deferral & Clean Insertion: buffer captions/footnotes/sidebars until the segment flushes.
+   - Emits `aux_groups` per chunk (sidecars, footnotes, other) and appends deferred content only after main narrative text.
+   - Tracks evidence spans for every paragraph block and preserves deterministic IDs with token-aware packing.
 7. **Telemetry & Output** (`pipeline/service.py`)
    - Bundle Blocks/Chunks/Triage/Telemetry artefacts and optionally write them to disk.
 
@@ -70,6 +70,17 @@ config = PipelineConfig.from_mapping({
 })
 service = PipelineService(config)
 result = service.process_pdf("sample.pdf")
+```
+
+Auxiliary-specific knobs ship with the following defaults:
+
+```
+aux.header_footer.repetition_threshold=0.50
+aux.y_band.pct=0.03
+aux.segment0.min_chars=150
+aux.segment0.font_percentile=0.80
+aux.superscript.y_offset_xheight=0.20
+aux.soft_boundary.max_deferred_pages=5
 ```
 
 ## Testing

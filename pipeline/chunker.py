@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence
+from dataclasses import dataclass
+from typing import Iterable, List, Sequence
 
 try:  # pragma: no cover - optional dependency
     import tiktoken
@@ -13,12 +13,11 @@ except Exception:  # pragma: no cover - fall back to whitespace counting
 from .config import PipelineConfig
 from .ids import make_chunk_id
 from .normalize import Block
+from .segmentor import SegmentChunk, Segmentor
 
 logger = logging.getLogger(__name__)
 
-TEXT_TYPES = {"paragraph", "list", "item", "code", "footnote"}
-SIDECAR_TYPES = {"table", "figure", "caption"}
-DISCOURSE_SPLIT_RE = re.compile(r"\b(Background|Method|Methods|Results|Conclusion|Conclusions)\b", re.IGNORECASE)
+BOUNDARY_RE = re.compile(r"^(references|appendix|glossary|index|chapter\s+|part\s+)", re.IGNORECASE)
 
 if tiktoken is not None:  # pragma: no cover - heavy dependency
     try:
@@ -48,227 +47,75 @@ class Chunk:
     sidecars: List[dict]
     evidence_spans: List[dict]
     quality: dict
+    aux_groups: dict
+    notes: str | None
 
 
-@dataclass
-class _ChunkBuilder:
-    doc_id: str
-    heading_path: List[str]
-    token_cfg: PipelineConfig
-    text: str = ""
-    evidence_spans: List[dict] = field(default_factory=list)
-    sidecars: List[dict] = field(default_factory=list)
-    pages: List[int] = field(default_factory=list)
-    ocr_pages: set[int] = field(default_factory=set)
-    rescued: bool = False
-    notes: set[str] = field(default_factory=set)
+class _NullTelemetry:
+    def inc(self, *args, **kwargs) -> None:  # pragma: no cover - fallback
+        return None
 
-    def add_heading_context(self, headings: Iterable[str]) -> None:
-        for heading in headings:
-            clean = heading.strip()
-            if not clean:
-                continue
-            if self.text:
-                self.text += "\n\n"
-            self.text += clean
-
-    def add_text(self, block: Block, text: str) -> None:
-        snippet = text.strip()
-        if not snippet:
-            return
-        if self.text:
-            self.text += "\n\n"
-        start = len(self.text)
-        self.text += snippet
-        end = len(self.text)
-        self.evidence_spans.append({
-            "para_block_id": block.block_id,
-            "start": start,
-            "end": end,
-        })
-        if block.page not in self.pages:
-            self.pages.append(block.page)
-        if block.source.get("stage") == "ocr":
-            self.ocr_pages.add(block.page)
-        if block.source.get("stage") == "layout":
-            self.rescued = True
-        token_len = count_tokens(self.text)
-        if token_len > self.token_cfg.chunk.tokens.maximum:
-            logger.warning(
-                "Chunk exceeded maximum tokens (%s > %s) while building",
-                token_len,
-                self.token_cfg.chunk.tokens.maximum,
-            )
-        self.notes.update(filter(None, [block.source.get("notes")]))
-
-    @property
-    def token_count(self) -> int:
-        return count_tokens(self.text)
-
-    def page_span(self) -> List[int]:
-        if not self.pages:
-            return [0, 0]
-        return [min(self.pages), max(self.pages)]
-
-    def build(self) -> Chunk:
-        quality = {
-            "ocr_pages": len(self.ocr_pages),
-            "rescued": self.rescued,
-            "notes": ",".join(sorted(self.notes)) if self.notes else "",
-        }
-        return Chunk(
-            chunk_id=make_chunk_id(),
-            doc_id=self.doc_id,
-            page_span=self.page_span(),
-            heading_path=list(self.heading_path),
-            text=self.text,
-            token_count=self.token_count,
-            sidecars=list(self.sidecars),
-            evidence_spans=list(self.evidence_spans),
-            quality=quality,
-        )
-
-    def attach_sidecar(self, entry: dict) -> None:
-        self.sidecars.append(entry)
-
-    def reset_for_next(self) -> None:
-        self.text = ""
-        self.evidence_spans.clear()
-        self.sidecars.clear()
-        self.pages.clear()
-        self.ocr_pages.clear()
-        self.rescued = False
-        self.notes.clear()
+    def flag(self, *args, **kwargs) -> None:  # pragma: no cover - fallback
+        return None
 
 
-def _update_heading_path(current: List[str], block: Block) -> List[str]:
-    if block.heading_level is None or block.heading_level <= 0:
-        if block.text.strip():
-            current = list(current)
-            if current:
-                current[-1] = block.text.strip()
-            else:
-                current = [block.text.strip()]
-        return current
-    level_index = block.heading_level - 1
-    new_path = current[:level_index]
-    new_path.append(block.text.strip())
-    return new_path
-
-
-def _split_for_chunking(text: str, max_tokens: int) -> List[str]:
-    tokens = count_tokens(text)
-    if tokens <= max_tokens:
-        return [text]
-    pieces = re.split(r"\n\n+", text)
-    if len(pieces) == 1:
-        match_positions = [m.start() for m in DISCOURSE_SPLIT_RE.finditer(text)]
-        if match_positions:
-            splits: List[str] = []
-            last = 0
-            for pos in match_positions:
-                if pos > last:
-                    splits.append(text[last:pos])
-                    last = pos
-            splits.append(text[last:])
-            pieces = [s for s in splits if s]
-        if len(pieces) <= 1:
-            pieces = re.split(r"(?<=[.!?])\s+", text)
-    segments: List[str] = []
-    for piece in pieces:
-        running = piece.strip()
-        if not running:
-            continue
-        if count_tokens(running) <= max_tokens:
-            segments.append(running)
-            continue
-        words = running.split()
-        if len(words) > max_tokens:
-            step = max_tokens
-            for idx in range(0, len(words), step):
-                segment = " ".join(words[idx : idx + step])
-                if segment:
-                    segments.append(segment)
-            continue
-        cursor = 0
-        while cursor < len(running):
-            chunk = running[cursor : cursor + max(128, len(running) // 3)]
-            segments.append(chunk)
-            cursor += len(chunk)
-    return segments
-
-
-def _drain_pending_sidecars(waiting: Dict[int, List[dict]], pages: Iterable[int]) -> List[dict]:
-    collected: List[dict] = []
-    for page in sorted(set(pages)):
-        collected.extend(waiting.pop(page, []))
-    return collected
-
-
-def chunk_blocks(doc_id: str, blocks: Sequence[Block], config: PipelineConfig) -> List[Chunk]:
-    tokens_cfg = config
+def _convert_chunks(doc_id: str, payloads: Iterable[SegmentChunk]) -> List[Chunk]:
     chunks: List[Chunk] = []
-    builder: _ChunkBuilder | None = None
-    heading_path: List[str] = []
-    pending_heading_texts: List[str] = []
-    pending_sidecars: Dict[int, List[dict]] = {}
-
-    def _start_new_chunk() -> _ChunkBuilder:
-        nonlocal builder
-        builder = _ChunkBuilder(doc_id=doc_id, heading_path=list(heading_path), token_cfg=tokens_cfg)
-        if pending_heading_texts:
-            builder.add_heading_context(pending_heading_texts)
-        return builder
-
-    def _finalise_current_chunk() -> None:
-        nonlocal builder
-        if builder is None or not builder.text.strip():
-            builder = None
-            return
-        builder.sidecars.extend(_drain_pending_sidecars(pending_sidecars, builder.pages))
-        chunk = builder.build()
-        if chunk.token_count > config.chunk.tokens.maximum:
-            logger.warning("Chunk %s exceeds hard maximum tokens (%s)", chunk.chunk_id, chunk.token_count)
+    for payload in payloads:
+        notes = sorted(set(payload.notes))
+        chunk = Chunk(
+            chunk_id=make_chunk_id(),
+            doc_id=doc_id,
+            page_span=list(payload.page_span),
+            heading_path=list(payload.heading_path),
+            text=payload.text,
+            token_count=payload.token_count,
+            sidecars=list(payload.sidecars),
+            evidence_spans=list(payload.evidence_spans),
+            quality=dict(payload.quality),
+            aux_groups={
+                "sidecars": list(payload.aux_groups.get("sidecars", [])),
+                "footnotes": list(payload.aux_groups.get("footnotes", [])),
+                "other": list(payload.aux_groups.get("other", [])),
+            },
+            notes=",".join(notes) if notes else None,
+        )
         chunks.append(chunk)
-        builder = None
+    return chunks
+
+
+def _is_hard_boundary(block: Block) -> bool:
+    text = (block.text or "").strip()
+    if block.role == "auxiliary" and block.aux_subtype == "activity":
+        return True
+    if block.type == "heading" and block.heading_level is not None and block.heading_level <= 3:
+        return True
+    if BOUNDARY_RE.match(text):
+        return True
+    return False
+
+
+def chunk_blocks(
+    doc_id: str,
+    blocks: Sequence[Block],
+    config: PipelineConfig,
+    telemetry=None,
+) -> List[Chunk]:
+    telemetry = telemetry or _NullTelemetry()
+    segmentor = Segmentor(doc_id, config, telemetry, count_tokens)
+    chunks: List[Chunk] = []
 
     for block in blocks:
-        if block.type == "heading":
-            heading_path = _update_heading_path(heading_path, block)
-            pending_heading_texts = [block.text.strip()]
-            _finalise_current_chunk()
-            continue
+        if _is_hard_boundary(block):
+            flushed = segmentor.boundary(hard=True)
+            if flushed:
+                chunks.extend(_convert_chunks(doc_id, flushed))
+        emitted = segmentor.add_block(block)
+        if emitted:
+            chunks.extend(_convert_chunks(doc_id, emitted))
 
-        if block.type in SIDECAR_TYPES:
-            entry = {"type": block.type, "page": block.page, "text": block.text}
-            if builder is not None and builder.text.strip():
-                builder.attach_sidecar(entry)
-            else:
-                pending_sidecars.setdefault(block.page, []).append(entry)
-            continue
-
-        if block.type not in TEXT_TYPES:
-            continue
-
-        segments = _split_for_chunking(block.text, config.chunk.tokens.maximum)
-        for segment in segments:
-            if builder is None:
-                _start_new_chunk()
-            elif builder.token_count >= config.chunk.tokens.target:
-                projected = count_tokens(builder.text + "\n\n" + segment)
-                if projected > config.chunk.tokens.maximum:
-                    _finalise_current_chunk()
-                    _start_new_chunk()
-            builder.add_text(block, segment)
-            builder.sidecars.extend(_drain_pending_sidecars(pending_sidecars, [block.page]))
-            if builder.token_count >= config.chunk.tokens.target:
-                _finalise_current_chunk()
-                pending_heading_texts = []
-
-    if builder is not None and builder.text.strip():
-        _finalise_current_chunk()
-
-    if pending_sidecars and chunks:
-        chunks[-1].sidecars.extend(_drain_pending_sidecars(pending_sidecars, chunks[-1].page_span))
+    tail = segmentor.finish()
+    if tail:
+        chunks.extend(_convert_chunks(doc_id, tail))
 
     return chunks

@@ -43,6 +43,10 @@ class PipelineResult:
                 "heading_path": block.heading_path,
                 "source": block.source,
                 "aux": block.aux,
+                "role": block.role,
+                "aux_subtype": block.aux_subtype,
+                "parent_block_id": block.parent_block_id,
+                "role_confidence": block.role_confidence,
             }
             for block in self.blocks
         ]
@@ -59,6 +63,8 @@ class PipelineResult:
                 "sidecars": chunk.sidecars,
                 "evidence_spans": chunk.evidence_spans,
                 "quality": chunk.quality,
+                "aux_groups": chunk.aux_groups,
+                "notes": chunk.notes,
             }
             for chunk in self.chunks
         ]
@@ -98,8 +104,8 @@ class PipelineService:
         telemetry.layout_pages = [d.page_number for d in layout_decisions if d.should_rescue]
         docling_blocks = run_docling(triage_pages)
         rescued_blocks = apply_layout_rescue(docling_blocks, layout_decisions)
-        blocks = normalise_blocks(triage_summary.doc_id, rescued_blocks)
-        chunks = chunk_blocks(triage_summary.doc_id, blocks, self.config)
+        blocks = normalise_blocks(triage_summary.doc_id, rescued_blocks, self.config, telemetry)
+        chunks = chunk_blocks(triage_summary.doc_id, blocks, self.config, telemetry)
         telemetry.chunk_count = len(chunks)
         triage_rows = triage_summary.to_csv_rows()
         return PipelineResult(

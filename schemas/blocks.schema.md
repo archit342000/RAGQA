@@ -11,4 +11,11 @@ Blocks JSON (array of objects)
 - heading_path:str[]
 - source:{stage:enum[triage,docling,ocr,layout], tool:str, version:str}
 - aux:{...}
+// Additions (backward compatible):
+// BEGIN ADDITIONS
+// role: "main"|"auxiliary"
+// aux_subtype: "caption"|"footnote"|"header"|"footer"|"sidebar"|"activity"|"source"|"other"|null
+// parent_block_id: str|null
+// role_confidence: float [0,1]
+// END ADDITIONS
 END VERBATIM
