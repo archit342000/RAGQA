@@ -33,6 +33,12 @@ class Telemetry:
     gate5_denies: int = 0
     paragraph_only_activations: int = 0
     invariant_violations: int = 0
+    tokens_main: int = 0
+    tokens_aux: int = 0
+    aux_delays: int = 0
+    stitches_used: int = 0
+    route_windows_light: int = 0
+    route_windows_heavy: int = 0
     threads_total: int = 0
     threads_main: int = 0
     threads_aux: int = 0

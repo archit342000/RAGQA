@@ -44,10 +44,10 @@ The pipeline powers both a CLI (`parse_to_chunks`) and the Spaces Gradio app (`a
 5. **Normalisation** (`pipeline/normalize.py`)
    - Materialise canonical Blocks JSON with deterministic IDs, provenance tags, and auxiliary-role metadata.
    - Apply conservative text cleaning and relax header/footer suppression whenever more than 30% of page lines would be dropped.
-6. **Reordering & Stitching** (`pipeline/chunker.py` + `pipeline/reorder_stitch/`)
-   - Detect per-page columns, score continuity edges, and grow Flow Threads with a constrained path cover.
-   - Assemble section narratives from the best threads, partition leftover blocks into an auxiliary pool, and emit **main-first** chunks followed by **aux-only** payloads per section.
-   - Invariants (I1–I4) ensure only threaded blocks reach narrative chunks, aux trails its section, and floats never enter Flow Threads while Flow-First limits (`T/S/H/m = 1600/2000/2400/900`) continue to apply.
+6. **Dual-Track Chunking & Micro-fixes** (`pipeline/chunker.py` + `pipeline/microfixes/`)
+   - Flow-first chunking continues to honour heading boundaries while aux content remains post-narrative.
+   - The cross-page stitcher mends mid-sentence page breaks (≤300 token budget) and the sentence-closure gate delays aux emission until a clean terminator is observed.
+   - Telemetry tracks stitch counts, aux delays, and route decisions in preparation for the router layer.
 7. **Telemetry & Output** (`pipeline/service.py`)
    - Emits per-doc summary telemetry, per-page CSV rows, watchdog timings, and bundles artefacts for downstream retrieval.
 

@@ -11,6 +11,8 @@ from .degraded_chunker import build_degraded_segment_chunks
 from .segmentor import SegmentChunk
 from .flow_chunker import FlowChunkPlan, build_flow_chunk_plan
 from .token_utils import count_tokens
+from .microfixes.cross_page_stitch import cross_page_stitch
+from .microfixes.sentence_gate import sentence_closure_gate
 from .reorder_stitch import (
     assemble_sections,
     build_threads,
@@ -183,6 +185,8 @@ def chunk_blocks(
 
     aux_pool = list(aux_index.values())
     chunks = _emit_sections(doc_id, sections, aux_pool, config)
+
+    chunks = _apply_microfixes(chunks, telemetry)
 
     if hasattr(telemetry, "inc"):
         telemetry.inc("threads_total", len(threads))
@@ -442,6 +446,22 @@ def _convert_chunks(doc_id: str, payloads: Iterable[SegmentChunk]) -> List[Chunk
     return chunks
 
 
+def _apply_microfixes(chunks: List[Chunk], telemetry) -> List[Chunk]:
+    if not chunks:
+        return []
+
+    working = list(chunks)
+    working, stitched = cross_page_stitch(working)
+    if stitched and hasattr(telemetry, "inc"):
+        telemetry.inc("stitches_used", stitched)
+
+    working, delayed_aux = sentence_closure_gate(working)
+    if delayed_aux and hasattr(telemetry, "inc"):
+        telemetry.inc("aux_delays", delayed_aux)
+
+    return working
+
+
 def _record_flow_metrics(chunks: Sequence[Chunk], telemetry) -> None:
     if telemetry is None:
         return
@@ -474,8 +494,10 @@ def _record_flow_metrics(chunks: Sequence[Chunk], telemetry) -> None:
         telemetry.inc("aux_other_count", len(chunk.aux_groups.get("other", [])))
         if chunk.is_aux_only:
             telemetry.inc("aux_only_chunks")
+            telemetry.inc("tokens_aux", chunk.token_count)
         elif chunk.is_main_only:
             telemetry.inc("main_chunks")
+            telemetry.inc("tokens_main", chunk.token_count)
 
 
 def _assert_invariants(
