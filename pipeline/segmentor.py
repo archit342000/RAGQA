@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -9,6 +10,8 @@ from .config import PipelineConfig
 from .flow_chunker import FlowChunkPlan, build_flow_chunk_plan
 from .flow_fence import flow_fence_tail_sanitize
 from .main_gate import main_gate
+from .gate5 import Gate5Decision, evaluate_gate5
+from .diagnostics import make_diagnostic_row
 from .normalize import Block
 
 
@@ -35,6 +38,7 @@ class SegmentChunk:
     is_aux_only: bool
     aux_subtypes_present: List[str]
     aux_group_seq: Optional[int]
+    debug_blocks: List[Block] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -49,6 +53,7 @@ class _Segment:
     pages: List[int] = field(default_factory=list)
     anchors: List[Dict[str, Optional[str]]] = field(default_factory=list)
     notes: set[str] = field(default_factory=set)
+    all_blocks: List[Block] = field(default_factory=list)
 
 
 class Segmentor:
@@ -118,11 +123,27 @@ class Segmentor:
         segment.last_page = max(segment.last_page, block.page)
         if block.page not in segment.pages:
             segment.pages.append(block.page)
+        segment.all_blocks.append(block)
 
         if passed and block.role == "main":
-            self._register_main(block)
-            segment.main_blocks.append(block)
-            self.telemetry.inc("main_blocks_kept")
+            decision = evaluate_gate5(block, self.config)
+            self._record_gate5(block, decision)
+            if decision.allow:
+                self._register_main(block)
+                segment.main_blocks.append(block)
+                block.aux.setdefault("diagnostic_color", "green")
+                self.telemetry.inc("main_blocks_kept")
+            else:
+                block.aux.setdefault("diagnostic_color", "orange")
+                block.aux.setdefault("gate5_reason", decision.reason)
+                self.telemetry.inc("gate5_denies")
+                if block.aux_subtype not in {"header", "footer"}:
+                    self.telemetry.inc("aux_buffered")
+                    self.telemetry.inc("blocks_diverted_to_aux")
+                self._anchor_aux(block, segment)
+                if block.aux_subtype is None:
+                    block.aux_subtype = "other"
+                segment.aux_blocks.append(block)
         else:
             if block.aux_subtype not in {"header", "footer"}:
                 self.telemetry.inc("aux_buffered")
@@ -162,6 +183,8 @@ class Segmentor:
             aux_blocks=list(self._pre_segment_aux),
         )
         segment.pages.append(block.page)
+        if segment.aux_blocks:
+            segment.all_blocks.extend(segment.aux_blocks)
         self._pre_segment_aux.clear()
         self.active = segment
 
@@ -173,10 +196,11 @@ class Segmentor:
     def _needs_soft_flush(self, block: Block) -> bool:
         if self.active is None:
             return False
-        max_span = self.config.segments.soft_boundary_pages
+        max_span = self.config.aux.soft_boundary_max_deferred_pages
         span = block.page - self.active.start_page + 1
         if span > max_span:
             self.active.notes.add("soft-flush")
+            self.telemetry.flag("AUX04")
             return True
         return False
 
@@ -224,6 +248,8 @@ class Segmentor:
         self.active = None
 
         payloads: List[SegmentChunk] = []
+        if self._should_activate_paragraph_only(segment):
+            self._activate_paragraph_only(segment)
         plans = build_flow_chunk_plan(segment.main_blocks, self.config, self.token_counter)
         seq_counter = 0
         for plan in plans:
@@ -283,11 +309,9 @@ class Segmentor:
                 payloads[-1].aux_in_followup = True
                 payloads[-1].link_next_index = len(payloads)
                 payloads.append(aux_chunk)
-                self.telemetry.inc("aux_only_chunks")
         elif aux_groups["sidecars"] or aux_groups["footnotes"] or aux_groups["other"]:
             aux_chunk = self._build_aux_chunk(segment, seq_counter, aux_groups, aux_notes, aux_subtypes)
             payloads.append(aux_chunk)
-            self.telemetry.inc("aux_only_chunks")
         elif payloads:
             payloads[-1].sidecars.extend(legacy_sidecars)
 
@@ -304,6 +328,11 @@ class Segmentor:
         pages = set()
         notes = set()
         last_block_id: Optional[str] = None
+        ordered_blocks: List[Block] = []
+        for fragment in plan.blocks:
+            block = fragment.block
+            if not ordered_blocks or ordered_blocks[-1] is not block:
+                ordered_blocks.append(block)
         for fragment in plan.blocks:
             block = fragment.block
             snippet = fragment.text.strip()
@@ -370,6 +399,7 @@ class Segmentor:
             is_aux_only=False,
             aux_subtypes_present=[],
             aux_group_seq=None,
+            debug_blocks=ordered_blocks,
         )
         if notes:
             joined = ",".join(sorted(notes))
@@ -414,6 +444,7 @@ class Segmentor:
             is_aux_only=True,
             aux_subtypes_present=sorted(aux_subtypes),
             aux_group_seq=1,
+            debug_blocks=[],
         )
         return chunk
 
@@ -468,17 +499,88 @@ class Segmentor:
     def _validate_invariants(self, chunks: Sequence[SegmentChunk]) -> None:
         if not chunks:
             return
-        aux_seen = False
+        deny_re = re.compile(r"^(fig|figure|table|source|activity|let.?s)", re.IGNORECASE)
         segment_id = chunks[0].segment_id
-        main_seen = any(chunk.is_main_only and not chunk.is_aux_only for chunk in chunks)
+        aux_seen = False
+        main_seen = False
         for chunk in chunks:
             if chunk.segment_id != segment_id:
-                raise RuntimeError("I3 violated: chunk spans multiple segments")
+                self._raise_invariant("I2", "segment mismatch")
             if chunk.is_aux_only:
                 aux_seen = True
-            if chunk.is_aux_only and not main_seen:
-                # No main chunks for this segment; allowed
                 continue
-            if not chunk.is_aux_only and aux_seen:
-                raise RuntimeError("I1 violated: main chunk emitted after auxiliary chunk")
-        # I4 cannot be checked without future context; assume satisfied.
+            main_seen = True
+            if aux_seen:
+                self._raise_invariant("I2", "main chunk after aux chunk")
+            for line in (chunk.text or "").splitlines():
+                if deny_re.match(line.strip()):
+                    self._raise_invariant("I1", "deny regex text in main chunk")
+            for block in chunk.debug_blocks:
+                if not self._width_ok(block):
+                    self._raise_invariant("I3", f"width floor violation {block.block_id}")
+
+    # ------------------------------------------------------------------
+    def _record_gate5(self, block: Block, decision: Gate5Decision) -> None:
+        if hasattr(self.telemetry, "record_gate5_decision"):
+            label = "APPEND_OK" if decision.allow else f"DENY(G5:{decision.reason})"
+            row = make_diagnostic_row(block, label, decision.reason)
+            self.telemetry.record_gate5_decision(row)
+
+    def _should_activate_paragraph_only(self, segment: _Segment) -> bool:
+        if segment.main_blocks:
+            min_blocks = self.config.paragraph_only.min_blocks_across_pages
+            window = self.config.paragraph_only.window_pages
+            if len(segment.main_blocks) >= min_blocks:
+                return False
+            page_span = segment.last_page - segment.start_page + 1
+            return page_span >= window
+        return True
+
+    def _activate_paragraph_only(self, segment: _Segment) -> None:
+        allowed_types = {"paragraph", "list", "item", "code", "equation"}
+        seen_main: set[str] = set()
+        seen_aux: set[str] = {block.block_id for block in segment.aux_blocks}
+        fallback_main: List[Block] = []
+        for block in segment.all_blocks:
+            lowered = (block.type or "").lower()
+            if lowered not in allowed_types:
+                if block.block_id not in seen_aux:
+                    segment.aux_blocks.append(block)
+                    seen_aux.add(block.block_id)
+                continue
+            decision = evaluate_gate5(block, self.config)
+            self._record_gate5(block, decision)
+            if decision.allow:
+                if block.block_id not in seen_main:
+                    fallback_main.append(block)
+                    seen_main.add(block.block_id)
+                    block.aux.setdefault("diagnostic_color", "green")
+            else:
+                block.aux.setdefault("diagnostic_color", "orange")
+                block.aux.setdefault("gate5_reason", decision.reason)
+                self.telemetry.inc("gate5_denies")
+                if block.block_id not in seen_aux:
+                    if block.aux_subtype not in {"header", "footer"}:
+                        self.telemetry.inc("aux_buffered")
+                    if block.aux_subtype is None:
+                        block.aux_subtype = "other"
+                    segment.aux_blocks.append(block)
+                    seen_aux.add(block.block_id)
+        segment.main_blocks = fallback_main
+        segment.notes.add("paragraph-only")
+        self.telemetry.inc("paragraph_only_activations")
+
+    def _width_ok(self, block: Block) -> bool:
+        bbox = block.bbox or {}
+        width = float(bbox.get("x1", 0.0)) - float(bbox.get("x0", 0.0))
+        if width <= 0:
+            return True
+        column_width = float(block.aux.get("column_width") or 0.0)
+        if column_width <= 0:
+            column_width = width
+        min_fraction = self.config.gate5.sidebar.min_column_width_fraction
+        return width >= (min_fraction * column_width)
+
+    def _raise_invariant(self, code: str, message: str) -> None:
+        self.telemetry.inc("invariant_violations")
+        raise RuntimeError(f"{code} violated: {message}")

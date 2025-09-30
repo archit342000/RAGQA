@@ -25,10 +25,14 @@ class Telemetry:
     hard_boundaries: int = 0
     soft_boundaries: int = 0
     aux_only_chunks: int = 0
+    main_chunks: int = 0
     main_blocks_kept: int = 0
     blocks_diverted_to_aux: int = 0
     header_footer_dropped: int = 0
     flow_fence_hits: int = 0
+    gate5_denies: int = 0
+    paragraph_only_activations: int = 0
+    invariant_violations: int = 0
     flags: List[str] = field(default_factory=list)
     extra_metrics: Dict[str, int] = field(default_factory=dict)
     pages: int = 0
@@ -52,6 +56,10 @@ class Telemetry:
     flow_aux_followup_count: int = 0
     flow_overflow_sum: int = 0
     flow_block_sum: int = 0
+    diagnostics_rows: List[Dict[str, object]] = field(default_factory=list)
+
+    def record_gate5_decision(self, row: Dict[str, object]) -> None:
+        self.diagnostics_rows.append(row)
 
     def to_dict(self) -> Dict[str, object]:
         flow_count = max(self.flow_chunk_count, 1)

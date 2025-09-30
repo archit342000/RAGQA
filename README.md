@@ -45,9 +45,9 @@ The pipeline powers both a CLI (`parse_to_chunks`) and the Spaces Gradio app (`a
    - Materialise canonical Blocks JSON with deterministic IDs, provenance tags, and auxiliary-role metadata.
    - Apply conservative text cleaning and relax header/footer suppression whenever more than 30% of page lines would be dropped.
 6. **Content-Aware Chunking** (`pipeline/chunker.py`)
-   - Two-pass **Auxiliary Isolation + Post-hoc Reflow**: Segmenter builds a main-only skeleton, chunker performs Flow-First packing, then emits aux-only payloads after narrative.
-   - Flow Fence rechecks tail blocks before closure, guaranteeing auxiliaries never appear mid-narrative and enforcing hysteresis limits (`T/S/H/m = 1600/2000/2400/900`).
-   - Tracks evidence spans for every paragraph block, deterministic IDs, and degraded fallback for extractor-only inputs (900–1100 token windows).
+   - **Gate-5 enforcement** runs inline with the flow packer so only narrative-safe blocks enter main chunks; denials are diverted to the auxiliary queue with diagnostics.
+   - **Paragraph-Only Mode** restitches sparse segments (\<1 main block across ≥2 pages) by re-evaluating paragraphs via Gate-5 and emitting aux-only follow-ups for all denials.
+   - Runtime invariants (I1–I4) guard against auxiliary leakage, enforce width floors, and fail-fast with telemetry + diagnostics when violated. Flow Fence still rechecks tails to uphold hysteresis limits (`T/S/H/m = 1600/2000/2400/900`).
 7. **Telemetry & Output** (`pipeline/service.py`)
    - Emits per-doc summary telemetry, per-page CSV rows, watchdog timings, and bundles artefacts for downstream retrieval.
 
@@ -112,6 +112,14 @@ flow.limits.min=900
 flow.boundary_slack_tokens=200
 segments.soft_boundary_pages=5
 anchor.lookahead_pages=1
+gate5.header_footer.y_band_pct=0.07
+gate5.header_footer.repetition_threshold=0.40
+gate5.caption_zone.lineheight_multiplier=1.5
+gate5.sidebar.min_column_width_fraction=0.60
+paragraph_only.min_blocks_across_pages=1
+paragraph_only.window_pages=2
+diagnostics.enable=true
+diagnostics.overlay.max_pages=2
 ```
 
 ## Testing

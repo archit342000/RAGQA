@@ -192,6 +192,10 @@ def _record_flow_metrics(chunks: Sequence[Chunk], telemetry) -> None:
         telemetry.inc("aux_sidecars_count", len(chunk.aux_groups.get("sidecars", [])))
         telemetry.inc("aux_footnotes_count", len(chunk.aux_groups.get("footnotes", [])))
         telemetry.inc("aux_other_count", len(chunk.aux_groups.get("other", [])))
+        if chunk.is_aux_only:
+            telemetry.inc("aux_only_chunks")
+        elif chunk.is_main_only:
+            telemetry.inc("main_chunks")
 
 
 def _should_use_degraded(blocks: Sequence[Block]) -> bool:

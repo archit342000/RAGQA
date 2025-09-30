@@ -39,6 +39,13 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
         },
         "boundary_slack_tokens": 200,
     },
+    "gate5": {
+        "header_footer": {"y_band_pct": 0.07, "repetition_threshold": 0.40},
+        "caption_zone": {"lineheight_multiplier": 1.5},
+        "sidebar": {"min_column_width_fraction": 0.60},
+    },
+    "paragraph_only": {"min_blocks_across_pages": 1, "window_pages": 2},
+    "diagnostics": {"enable": True, "overlay_max_pages": 2},
     "aux": {
         "header_footer": {
             "repetition_threshold": 0.40,
@@ -124,6 +131,41 @@ class FlowConfig:
 
 
 @dataclass
+class Gate5HeaderFooterConfig:
+    y_band_pct: float = 0.07
+    repetition_threshold: float = 0.40
+
+
+@dataclass
+class Gate5SidebarConfig:
+    min_column_width_fraction: float = 0.60
+
+
+@dataclass
+class Gate5CaptionConfig:
+    lineheight_multiplier: float = 1.5
+
+
+@dataclass
+class Gate5Config:
+    header_footer: Gate5HeaderFooterConfig = field(default_factory=Gate5HeaderFooterConfig)
+    sidebar: Gate5SidebarConfig = field(default_factory=Gate5SidebarConfig)
+    caption_zone: Gate5CaptionConfig = field(default_factory=Gate5CaptionConfig)
+
+
+@dataclass
+class ParagraphOnlyConfig:
+    min_blocks_across_pages: int = 1
+    window_pages: int = 2
+
+
+@dataclass
+class DiagnosticsConfig:
+    enable: bool = True
+    overlay_max_pages: int = 2
+
+
+@dataclass
 class AuxHeaderFooterConfig:
     repetition_threshold: float = 0.40
     dropcap_max_fraction: float = 0.30
@@ -197,6 +239,9 @@ class PipelineConfig:
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    gate5: Gate5Config = field(default_factory=Gate5Config)
+    paragraph_only: ParagraphOnlyConfig = field(default_factory=ParagraphOnlyConfig)
+    diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None = None) -> "PipelineConfig":
@@ -386,6 +431,72 @@ class PipelineConfig:
             ),
             parallel=ParallelConfig(workers=int(merged.get("parallel", {}).get("workers", 3))),
             cache=CacheConfig(dir=str(merged.get("cache", {}).get("dir", "/cache/{doc_sha}/{page_no}/{dpi}"))),
+            gate5=Gate5Config(
+                header_footer=Gate5HeaderFooterConfig(
+                    y_band_pct=float(
+                        merged.get("gate5", {})
+                        .get("header_footer", {})
+                        .get(
+                            "y_band_pct",
+                            CONFIG_DEFAULTS["gate5"]["header_footer"]["y_band_pct"],
+                        )
+                    ),
+                    repetition_threshold=float(
+                        merged.get("gate5", {})
+                        .get("header_footer", {})
+                        .get(
+                            "repetition_threshold",
+                            CONFIG_DEFAULTS["gate5"]["header_footer"]["repetition_threshold"],
+                        )
+                    ),
+                ),
+                sidebar=Gate5SidebarConfig(
+                    min_column_width_fraction=float(
+                        merged.get("gate5", {})
+                        .get("sidebar", {})
+                        .get(
+                            "min_column_width_fraction",
+                            CONFIG_DEFAULTS["gate5"]["sidebar"]["min_column_width_fraction"],
+                        )
+                    )
+                ),
+                caption_zone=Gate5CaptionConfig(
+                    lineheight_multiplier=float(
+                        merged.get("gate5", {})
+                        .get("caption_zone", {})
+                        .get(
+                            "lineheight_multiplier",
+                            CONFIG_DEFAULTS["gate5"]["caption_zone"]["lineheight_multiplier"],
+                        )
+                    )
+                ),
+            ),
+            paragraph_only=ParagraphOnlyConfig(
+                min_blocks_across_pages=int(
+                    merged.get("paragraph_only", {}).get(
+                        "min_blocks_across_pages",
+                        CONFIG_DEFAULTS["paragraph_only"]["min_blocks_across_pages"],
+                    )
+                ),
+                window_pages=int(
+                    merged.get("paragraph_only", {}).get(
+                        "window_pages", CONFIG_DEFAULTS["paragraph_only"]["window_pages"]
+                    )
+                ),
+            ),
+            diagnostics=DiagnosticsConfig(
+                enable=bool(
+                    merged.get("diagnostics", {}).get(
+                        "enable", CONFIG_DEFAULTS["diagnostics"]["enable"]
+                    )
+                ),
+                overlay_max_pages=int(
+                    merged.get("diagnostics", {}).get(
+                        "overlay_max_pages",
+                        CONFIG_DEFAULTS["diagnostics"]["overlay_max_pages"],
+                    )
+                ),
+            ),
         )
 
 

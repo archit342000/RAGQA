@@ -27,3 +27,10 @@ Per-page CSV
 - has_tounicode:bool
 - path_used:str
 - filter_relaxed:bool
+
+Additions (per doc)
+- gate5_denies:int
+- paragraph_only_activations:int
+- invariant_violations:int
+- main_chunks:int
+- aux_only_chunks:int
