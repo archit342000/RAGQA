@@ -1,117 +1,145 @@
-# Document Parser & HF Spaces Demo
+# PDF Blocks & Chunking Pipeline
 
-This project provides a lightweight document parsing module tailored for Retrieval-Augmented Generation (RAG) pipelines, plus a Gradio UI suited for Hugging Face Spaces deployments. The parser prioritises fast PDF extraction via `pypdf`, falls back to the `unstructured` library when the layout is challenging, and exposes metrics that help you decide when to escalate processing.
+This repository hosts a Hugging Face Spaces-friendly pipeline that turns PDFs into:
+
+- **Blocks JSON** – canonical page-level records following the Step-1 schema.
+- **Chunks JSONL** – content-aware retrieval units aligned to headings.
+- **Page Triage CSV** – diagnostic metrics for per-page routing.
+- **Telemetry JSON** – summarised gate decisions and latencies.
+
+The pipeline powers both a CLI (`parse_to_chunks`) and the Spaces Gradio app (`app.py`). Retrieval stays unchanged.
 
 ## Quickstart
 
-1. Install dependencies:
+1. Install system dependencies (OCR backends are optional locally but required for full fidelity):
    ```bash
    pip install -r requirements.txt
    ```
-2. Run the demo locally:
+2. Run unit tests:
+   ```bash
+   pytest
+   ```
+3. Launch the Gradio interface:
    ```bash
    python app.py
    ```
-   or rely on Gradio's CLI:
+4. Use the CLI for offline processing:
    ```bash
-   gradio app.py
+   python -m pipeline.cli parse-to-chunks <input.pdf> <out-dir>
    ```
 
-Upload one or more PDF, TXT, or Markdown files to preview per-page text, see fallback decisions, and (optionally) inspect metrics from the gated debug panel.
+## Pipeline Overview
 
-## Hugging Face Spaces Notes
+1. **Page Triage** (`pipeline/triage.py`)
+   - Run PyMuPDF, pypdfium2, and pdfminer to vote on text-layer presence and capture extractor lengths.
+   - Record font diagnostics (Type3/CID, ToUnicode) and cache extractor text for Docling fallbacks and forced OCR routing.
+   - Extract PyMuPDF bounding boxes for coverage metrics and persist the expanded per-page telemetry CSV.
+2. **Primary Conversion** (`pipeline/docling_adapter.py`)
+   - Docling-first conversion wrapped in a 20s watchdog with deterministic fallback to triage text.
+   - Records which pages required the fallback ladder so telemetry can report degraded paths.
+3. **Selective OCR Gate** (`pipeline/ocr.py`)
+   - Apply the gate formula, choose Nougat vs Tesseract via `math_density`, and respect a 12s watchdog before falling back to triage text.
+4. **Layout Rescue** (`pipeline/layout_rescue.py`)
+   - Optional layout recovery guarded by an 8s watchdog; failures return the Docling ordering without aborting the document.
+5. **Normalisation** (`pipeline/normalize.py`)
+   - Materialise canonical Blocks JSON with deterministic IDs, provenance tags, and auxiliary-role metadata.
+   - Apply conservative text cleaning and relax header/footer suppression whenever more than 30% of page lines would be dropped.
+6. **Dual-Track Chunking & Micro-fixes** (`pipeline/chunker.py` + `pipeline/microfixes/`)
+   - Flow-first chunking continues to honour heading boundaries while aux content remains post-narrative.
+   - The cross-page stitcher mends mid-sentence page breaks (≤300 token budget) and the sentence-closure gate delays aux emission until a clean terminator is observed.
+   - Telemetry tracks stitch counts, aux delays, and route decisions in preparation for the router layer.
+7. **Telemetry & Output** (`pipeline/service.py`)
+   - Emits per-doc summary telemetry, per-page CSV rows, watchdog timings, and bundles artefacts for downstream retrieval.
 
-- Designed for the CPU runtime; no GPU or heavy OCR dependencies are required.
-- The hi-res OCR path is gated by an environment flag and currently stubbed to the fast strategy to avoid Detectron2/Tesseract installs.
-- Keep uploads small (<800 pages) for responsive demos. The `MAX_PAGES` flag trims larger documents with a visible warning.
+## Service Surface
 
-## Configuration via Environment Variables
+- **CLI** – `python -m pipeline.cli parse-to-chunks sample_docs/demo.pdf artifacts/`.
+- **Gradio App** – upload a PDF, trigger parsing, then run retrieval over the generated chunks.
+- **Schemas** – verbatim copies live under `schemas/` for compliance automation.
 
-Default configuration values live in the project's `.env` file; edit it to
-customise behaviour locally or on Spaces. The parser reads the following
-variables (defaults in parentheses):
+## Configuration
 
-- `MAX_PAGES` (`800`): hard limit on processed pages per document.
-- `MAX_TOTAL_PAGES` (`1200`): aggregate ceiling across all uploaded documents in one run.
-- `MIN_CHARS_PER_PAGE` (`200`): threshold used to detect sparse pages during heuristic checks.
-- `FALLBACK_EMPTY_PAGE_RATIO` (`0.3`): ratio of low-density pages that triggers the `unstructured` fallback.
-- `UNSTRUCTURED_STRATEGY` (`fast`): default fallback strategy. The UI can switch to "High accuracy" when `ENABLE_HI_RES=true`.
-- `ENABLE_HI_RES` (`false`): when set to `true`, enables the "High accuracy" parsing mode in the UI. Otherwise the option is disabled and requests are clamped to the fast path.
-- `SHOW_DEBUG` (`false`): when `true`, exposes the developer-focused metrics panel in the UI.
-- `CHUNK_MODE_DEFAULT` (`semantic`): default chunking strategy when the UI control is untouched.
-- `MAX_TOTAL_TOKENS_FOR_CHUNKING` (`300000`): guardrail enforced by the chunker to keep latency bounded.
-- `SEMANTIC_MODEL_NAME` (`intfloat/e5-small-v2`): embedding model used by the semantic chunker. Override to match your hardware budget.
-- `TOKENIZER_NAME` (`hf-internal-testing/llama-tokenizer`): tokenizer used for token accounting inside the chunker.
+Defaults match the provided CONFIG_DEFAULTS and can be overridden via `PipelineConfig.from_mapping`:
 
-### Why hide these knobs?
+```python
+from pipeline import PipelineConfig, PipelineService
 
-These thresholds and strategy fields are expert tuning levers that depend on document corpora. Exposing them in the user interface creates confusion without delivering value. They remain fully configurable via environment variables so deployments can tailor behaviour without overwhelming end users.
+config = PipelineConfig.from_mapping({
+    "ocr": {"gate": {"char_count_threshold": 180}},
+    "timeouts": {"doc": {"cap_seconds": 180}},
+    "chunk": {"tokens": {"target": 900}},
+})
+service = PipelineService(config)
+result = service.process_pdf("sample.pdf")
+```
 
-## Fallback Heuristics
+Key defaults (see `pipeline/config.py` for the full map):
 
-1. Extract text from each page with `pypdf` and compute character counts.
-2. If the fraction of pages below the `MIN_CHARS_PER_PAGE` threshold exceeds `FALLBACK_EMPTY_PAGE_RATIO`, switch to `unstructured`.
-3. Independently, compute layout metrics (short-line ratio, blank-line ratio, digit-heavy ratio). If the weighted score ≥ 0.6, trigger fallback.
-4. The hi-res path is clamped to the fast path unless `ENABLE_HI_RES=true`, and even then it stays stubbed pending OCR dependencies.
-
-## Chunking Strategies
-
-After parsing and cleaning, the app automatically turns page text into
-retrieval-sized chunks. Two strategies are available from the "Chunking mode"
-dropdown:
-
-- **Semantic (recommended)** – Uses LangChain's `SemanticChunker` with
-  `intfloat/e5-small-v2` embeddings to group coherent sentences before packing
-  them into ~200–700 token windows. Pages detected as table/list-heavy fall
-  back to fixed windowing automatically.
-- **Fixed** – Applies deterministic sliding windows (700 tokens with 100-token
-  overlap, or 400/40 for table-heavy pages) while keeping page anchors intact.
-
-Chunk metadata records `doc_id`, human-friendly `doc_name`, originating
-`page_start`/`page_end`, the first heading encountered, and the token count
-used for retrieval. Switch modes via the UI or set `CHUNK_MODE_DEFAULT` in the
-`.env` file for unattended deployments.
-
-## Debugging
- 
-Enable the `SHOW_DEBUG=true` environment flag to surface parser choice,
-aggregate metrics, fallback reasons, chunk counts, and timing data. The panel
-stays hidden by default to keep the end-user experience focused.
+```
+timeouts.triage.seconds=5
+timeouts.docling.seconds=20
+timeouts.ocr.seconds=12
+timeouts.layout.seconds=8
+timeouts.doc.cap.seconds=240
+extractor.vote.char_threshold=150
+ocr.psm=[6,4]
+ocr.oem=1
+ocr.force.dpi.default=200
+ocr.force.dpi.math=300
+gpu.acquire.max_wait_seconds=20
+raster.dpi.default=200
+raster.dpi.math=300
+raster.max_megapixels=12
+chunk.tokens.target=1000
+chunk.tokens.min=500
+chunk.tokens.max=1400
+chunk.degraded.target=1000
+chunk.degraded.min=900
+chunk.degraded.max=1100
+aux.header_footer.repetition_threshold=0.40
+aux.header_footer.dropcap.max_fraction=0.30
+aux.header_footer.y_band_pct=0.07
+aux.segment0.min_chars=150
+aux.segment0.font_percentile=0.80
+aux.superscript.y_offset_xheight=0.20
+aux.soft_boundary.max_deferred_pages=5
+aux.callout.column_width_fraction_max=0.60
+aux.font_band.small_quantile=0.20
+flow.limits.target=1600
+flow.limits.soft=2000
+flow.limits.hard=2400
+flow.limits.min=900
+flow.boundary_slack_tokens=200
+segments.soft_boundary_pages=5
+anchor.lookahead_pages=1
+gate5.header_footer.y_band_pct=0.07
+gate5.header_footer.repetition_threshold=0.40
+gate5.caption_zone.lineheight_multiplier=1.5
+gate5.sidebar.min_column_width_fraction=0.60
+paragraph_only.min_blocks_across_pages=1
+paragraph_only.window_pages=2
+diagnostics.enable=true
+diagnostics.overlay.max_pages=2
+```
 
 ## Testing
 
-The included tests exercise the routing heuristics and cleaning routines:
+Two focused suites assert the mandatory heuristics:
 
-```bash
-pytest
-```
+- `tests/test_gate.py` – OCR gate math density and routing edge cases.
+- `tests/test_chunker.py` – heading-aware packing, token limits, and sidecar attachment.
+- `tests/test_watchdog.py` – watchdog fallbacks for long-running stages.
+- `tests/test_degraded_chunker.py` – guarantees at least one chunk via the degraded path.
 
-For integration-style checks, drop sample fixtures under `sample_docs/` as described in `sample_docs/README.md`.
+Run them with `pytest`.
 
-## Package Overview
+## Directories
 
-- `parser/` – modular extraction, cleaning, metrics, and driver logic.
-- `chunking/` – semantic/fixed chunkers plus token packers for retrieval windows.
-- `app.py` – Gradio Blocks UI for quick inspection.
-- `tests/` – pytest suite covering parsing and chunking flows.
+- `pipeline/` – new Step-1 implementation (triage → chunking).
+- `schemas/` – verbatim schema snapshots.
+- `retrieval/` – unchanged retrieval engines wired into the Gradio demo.
+- `app.py` – Spaces-ready interface now using the new pipeline outputs.
 
-This structure keeps the parser module production-ready while remaining light enough for Hugging Face Spaces cold starts.
+## License
 
-## Offline Retrieval Evaluation
-
-1. Ensure you have a gold dataset following `eval/schema.md` and chunk metadata (e.g. `chunks.jsonl`).
-2. Install evaluation dependencies: `pip install -r requirements.txt`.
-3. Run a baseline evaluation:
-   ```bash
-   python eval/runner.py --gold path/to/gold.jsonl --chunks path/to/chunks.jsonl --engine all --config eval/config.yaml
-   ```
-4. Aggregate multiple runs into an HTML report:
-   ```bash
-   python eval/report.py --runs "runs/**/*.json" --out report/report.html
-   ```
-5. Execute ablation suites (e.g., varying top-k):
-   ```bash
-   python eval/ablation.py --suite basic --gold path/to/gold.jsonl --chunks path/to/chunks.jsonl
-   ```
-
-Outputs are written to the directory configured in `eval/config.yaml` (default `runs/`). The generated `summary.csv`, `per_tag.csv`, and `report.html` provide overall comparisons, per-tag slices, and bootstrap-based engine comparisons.
+MIT. See `LICENSE` for full terms.
