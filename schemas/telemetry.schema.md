@@ -34,3 +34,7 @@ Additions (per doc)
 - invariant_violations:int
 - main_chunks:int
 - aux_only_chunks:int
+- threads_total:int
+- threads_main:int
+- threads_aux:int
+- avg_thread_cohesion:float

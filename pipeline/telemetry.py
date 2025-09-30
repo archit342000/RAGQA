@@ -33,6 +33,10 @@ class Telemetry:
     gate5_denies: int = 0
     paragraph_only_activations: int = 0
     invariant_violations: int = 0
+    threads_total: int = 0
+    threads_main: int = 0
+    threads_aux: int = 0
+    avg_thread_cohesion: float = 0.0
     flags: List[str] = field(default_factory=list)
     extra_metrics: Dict[str, int] = field(default_factory=dict)
     pages: int = 0

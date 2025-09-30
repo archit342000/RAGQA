@@ -40,7 +40,13 @@ def _block(
             boundary_kind = "Para"
         else:
             boundary_kind = "None"
-    resolved_heading_path = heading_path if heading_path is not None else ([text] if type == "heading" else [])
+    if heading_path is None:
+        if type == "heading":
+            resolved_heading_path = [text]
+        else:
+            resolved_heading_path = []
+    else:
+        resolved_heading_path = heading_path
     return Block(
         doc_id=doc_id,
         block_id=block_id,
@@ -63,33 +69,62 @@ def _block(
     )
 
 
-def test_chunker_respects_headings_and_sidecars() -> None:
+def test_chunker_emits_section_first_with_aux_followups() -> None:
     config = PipelineConfig.from_mapping(
         {"flow": {"limits": {"target": 10, "soft": 12, "hard": 14, "min": 5}}}
     )
     blocks = [
         _block(block_id="b1", page=1, order=0, type="heading", text="Heading 1", heading_level=1),
-        _block(block_id="b2", page=1, order=1, type="paragraph", text="alpha beta gamma delta"),
-        _block(block_id="b3", page=1, order=2, type="table", text="Table contents", role="auxiliary", aux_subtype="sidebar"),
-        _block(block_id="b4", page=2, order=3, type="heading", text="Section", heading_level=2),
-        _block(block_id="b5", page=2, order=4, type="figure", text="Figure contents", role="auxiliary", aux_subtype="sidebar"),
-        _block(block_id="b6", page=2, order=5, type="paragraph", text="one two three four five six seven"),
+        _block(block_id="b2", page=1, order=1, type="paragraph", text="alpha beta gamma delta", heading_path=["Heading 1"]),
+        _block(
+            block_id="b3",
+            page=1,
+            order=2,
+            type="table",
+            text="Table contents",
+            role="auxiliary",
+            aux_subtype="sidebar",
+            heading_path=["Heading 1"],
+        ),
+        _block(block_id="b4", page=2, order=3, type="heading", text="Section", heading_level=2, heading_path=["Heading 1", "Section"]),
+        _block(
+            block_id="b5",
+            page=2,
+            order=4,
+            type="figure",
+            text="Figure contents",
+            role="auxiliary",
+            aux_subtype="sidebar",
+            heading_path=["Heading 1", "Section"],
+        ),
+        _block(
+            block_id="b6",
+            page=2,
+            order=5,
+            type="paragraph",
+            text="one two three four five six seven",
+            heading_path=["Heading 1", "Section"],
+        ),
     ]
 
     chunks = chunk_blocks("doc", blocks, config)
-    assert len(chunks) == 2
+    main_chunks = [chunk for chunk in chunks if chunk.is_main_only]
+    aux_chunks = [chunk for chunk in chunks if chunk.is_aux_only]
 
-    first, second = chunks
-    assert first.heading_path[-1] == "Heading 1"
-    assert first.sidecars and first.sidecars[0]["type"] == "table"
-    assert first.aux_groups["sidecars"]
-    assert first.evidence_spans and first.evidence_spans[0]["para_block_id"] == "b2"
+    assert len(main_chunks) == 2
+    assert len(aux_chunks) == 2
 
-    assert second.heading_path[-1] == "Section"
-    assert second.sidecars and second.sidecars[0]["type"] == "figure"
-    assert second.aux_groups["sidecars"]
-    assert second.evidence_spans[0]["start"] < second.evidence_spans[0]["end"]
-    assert second.token_count <= config.flow.limits.hard
+    first_main = main_chunks[0]
+    first_aux = next(chunk for chunk in aux_chunks if chunk.section_id == first_main.section_id)
+    assert first_main.heading_path[-1] == "Heading 1"
+    assert first_main.aux_groups["sidecars"] == []
+    assert any(entry.get("text") == "Table contents" for entry in first_aux.aux_groups["other"])
+
+    second_main = main_chunks[1]
+    second_aux = next(chunk for chunk in aux_chunks if chunk.section_id == second_main.section_id)
+    assert second_main.heading_path[-1] == "Section"
+    assert any(entry.get("text") == "Figure contents" for entry in second_aux.aux_groups["other"])
+    assert second_main.token_count <= config.flow.limits.hard
 
 
 def test_chunker_splits_long_text() -> None:

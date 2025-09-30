@@ -23,6 +23,11 @@ Chunks JSONL (one per chunk)
 // aux_in_followup: bool
 // link_prev: str|null
 // link_next: str|null
+// section_id: str
+// thread_id: str|null
+// is_main_only: bool
+// is_aux_only: bool
+// aux_subtypes_present: [str]
 // segment_id: str
 // segment_seq: int
 // is_main_only: bool
