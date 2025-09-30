@@ -17,5 +17,10 @@ Blocks JSON (array of objects)
 // aux_subtype: "caption"|"footnote"|"header"|"footer"|"sidebar"|"activity"|"source"|"other"|null
 // parent_block_id: str|null
 // role_confidence: float [0,1]
+// safe_split_after: bool
+// boundary_kind: "H1"|"H2"|"H3"|"Sub"|"List"|"Para"|"Sent"|"None"
+// est_tokens: int
+// main_gate_passed: bool
+// rejection_reasons: [str]
 // END ADDITIONS
 END VERBATIM

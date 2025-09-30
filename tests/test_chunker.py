@@ -40,6 +40,7 @@ def _block(
             boundary_kind = "Para"
         else:
             boundary_kind = "None"
+    resolved_heading_path = heading_path if heading_path is not None else ([text] if type == "heading" else [])
     return Block(
         doc_id=doc_id,
         block_id=block_id,
@@ -49,7 +50,7 @@ def _block(
         text=text,
         bbox={"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0},
         heading_level=heading_level,
-        heading_path=heading_path or [],
+        heading_path=resolved_heading_path,
         source={"stage": source_stage, "tool": "stub", "version": "1.0"},
         aux={},
         role=role,

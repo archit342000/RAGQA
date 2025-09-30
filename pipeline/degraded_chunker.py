@@ -56,6 +56,8 @@ def build_degraded_segment_chunks(
             evidence.append({"para_block_id": blk.block_id, "start": start, "end": end})
             cursor = end
         chunk = SegmentChunk(
+            segment_id=f"{doc_id}-degraded",
+            segment_seq=len(chunks),
             heading_path=heading,
             text=combined,
             page_span=[min(pages) if pages else 1, max(pages) if pages else 1],
@@ -76,6 +78,10 @@ def build_degraded_segment_chunks(
             aux_in_followup=False,
             link_prev_index=None,
             link_next_index=None,
+            is_main_only=True,
+            is_aux_only=False,
+            aux_subtypes_present=[],
+            aux_group_seq=None,
         )
         chunks.append(chunk)
         buffer = []

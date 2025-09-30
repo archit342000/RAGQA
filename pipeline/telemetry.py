@@ -24,6 +24,11 @@ class Telemetry:
     segments: int = 0
     hard_boundaries: int = 0
     soft_boundaries: int = 0
+    aux_only_chunks: int = 0
+    main_blocks_kept: int = 0
+    blocks_diverted_to_aux: int = 0
+    header_footer_dropped: int = 0
+    flow_fence_hits: int = 0
     flags: List[str] = field(default_factory=list)
     extra_metrics: Dict[str, int] = field(default_factory=dict)
     pages: int = 0

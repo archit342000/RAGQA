@@ -45,9 +45,9 @@ The pipeline powers both a CLI (`parse_to_chunks`) and the Spaces Gradio app (`a
    - Materialise canonical Blocks JSON with deterministic IDs, provenance tags, and auxiliary-role metadata.
    - Apply conservative text cleaning and relax header/footer suppression whenever more than 30% of page lines would be dropped.
 6. **Content-Aware Chunking** (`pipeline/chunker.py`)
-   - Maintains auxiliary deferral, honours heading boundaries, and guarantees at least one chunk via the degraded fallback packer.
-   - Routes extractor-only documents directly into the degraded packer (900–1100 token windows) for always-on emissions.
-   - Tracks evidence spans for every paragraph block and preserves deterministic IDs with token-aware packing.
+   - Two-pass **Auxiliary Isolation + Post-hoc Reflow**: Segmenter builds a main-only skeleton, chunker performs Flow-First packing, then emits aux-only payloads after narrative.
+   - Flow Fence rechecks tail blocks before closure, guaranteeing auxiliaries never appear mid-narrative and enforcing hysteresis limits (`T/S/H/m = 1600/2000/2400/900`).
+   - Tracks evidence spans for every paragraph block, deterministic IDs, and degraded fallback for extractor-only inputs (900–1100 token windows).
 7. **Telemetry & Output** (`pipeline/service.py`)
    - Emits per-doc summary telemetry, per-page CSV rows, watchdog timings, and bundles artefacts for downstream retrieval.
 
@@ -96,18 +96,22 @@ chunk.tokens.max=1400
 chunk.degraded.target=1000
 chunk.degraded.min=900
 chunk.degraded.max=1100
-aux.header_footer.repetition_threshold=0.50
+aux.header_footer.repetition_threshold=0.40
 aux.header_footer.dropcap.max_fraction=0.30
-aux.y_band.pct=0.03
+aux.header_footer.y_band_pct=0.07
 aux.segment0.min_chars=150
 aux.segment0.font_percentile=0.80
 aux.superscript.y_offset_xheight=0.20
 aux.soft_boundary.max_deferred_pages=5
+aux.callout.column_width_fraction_max=0.60
+aux.font_band.small_quantile=0.20
 flow.limits.target=1600
 flow.limits.soft=2000
 flow.limits.hard=2400
 flow.limits.min=900
 flow.boundary_slack_tokens=200
+segments.soft_boundary_pages=5
+anchor.lookahead_pages=1
 ```
 
 ## Testing

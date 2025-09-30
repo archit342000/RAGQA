@@ -17,5 +17,17 @@ Chunks JSONL (one per chunk)
 //   other: [{aux_subtype, text}]
 // }
 // notes: str|null
+// limits: {target:int, soft:int, hard:int, min:int}
+// flow_overflow: int
+// closed_at_boundary: "H1"|"H2"|"H3"|"Sub"|"Para"|"Sent"|"EOF"
+// aux_in_followup: bool
+// link_prev: str|null
+// link_next: str|null
+// segment_id: str
+// segment_seq: int
+// is_main_only: bool
+// is_aux_only: bool
+// aux_subtypes_present: [str]
+// aux_group_seq: int|null
 // END ADDITIONS
 END VERBATIM

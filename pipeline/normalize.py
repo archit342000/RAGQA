@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence, Tuple, Dict, Any, Optional, TYPE_CHECKING
 
 import re
@@ -39,6 +39,8 @@ class Block:
     safe_split_after: bool
     boundary_kind: str
     est_tokens: int
+    main_gate_passed: bool = False
+    rejection_reasons: List[str] = field(default_factory=list)
 
 
 def normalise_blocks(
@@ -138,6 +140,8 @@ def normalise_blocks(
         if drop:
             if telemetry is not None:
                 telemetry.inc("aux_discarded")
+                if meta["aux_subtype"] in {"header", "footer"}:
+                    telemetry.inc("header_footer_dropped")
             if flag and telemetry is not None:
                 telemetry.flag(flag)
             continue
@@ -167,6 +171,8 @@ def normalise_blocks(
                 safe_split_after=meta["safe_split_after"],
                 boundary_kind=meta["boundary_kind"],
                 est_tokens=meta["est_tokens"],
+                main_gate_passed=False,
+                rejection_reasons=[],
             )
         )
     return normalised

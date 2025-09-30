@@ -40,12 +40,19 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
         "boundary_slack_tokens": 200,
     },
     "aux": {
-        "header_footer": {"repetition_threshold": 0.50, "dropcap_max_fraction": 0.30},
-        "y_band": {"pct": 0.03},
+        "header_footer": {
+            "repetition_threshold": 0.40,
+            "dropcap_max_fraction": 0.30,
+            "y_band_pct": 0.07,
+        },
         "segment0": {"min_chars": 150, "font_percentile": 0.80},
         "superscript": {"y_offset_xheight": 0.20},
         "soft_boundary": {"max_deferred_pages": 5},
+        "callout": {"column_width_fraction_max": 0.60},
+        "font_band": {"small_quantile": 0.20},
     },
+    "segments": {"soft_boundary_pages": 5},
+    "anchor": {"lookahead_pages": 1},
     "timeouts": {
         "triage": {"seconds": 5},
         "docling": {"seconds": 20},
@@ -118,18 +125,31 @@ class FlowConfig:
 
 @dataclass
 class AuxHeaderFooterConfig:
-    repetition_threshold: float = 0.50
+    repetition_threshold: float = 0.40
     dropcap_max_fraction: float = 0.30
+    y_band_pct: float = 0.07
 
 
 @dataclass
 class AuxConfig:
     header_footer: AuxHeaderFooterConfig = field(default_factory=AuxHeaderFooterConfig)
-    y_band_pct: float = 0.03
+    y_band_pct: float = 0.07
     segment0_min_chars: int = 150
     segment0_font_percentile: float = 0.80
     superscript_y_offset_xheight: float = 0.20
     soft_boundary_max_deferred_pages: int = 5
+    callout_column_width_fraction_max: float = 0.60
+    font_band_small_quantile: float = 0.20
+
+
+@dataclass
+class SegmentConfig:
+    soft_boundary_pages: int = 5
+
+
+@dataclass
+class AnchorConfig:
+    lookahead_pages: int = 1
 
 
 @dataclass
@@ -171,6 +191,8 @@ class PipelineConfig:
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     flow: FlowConfig = field(default_factory=FlowConfig)
     aux: AuxConfig = field(default_factory=AuxConfig)
+    segments: SegmentConfig = field(default_factory=SegmentConfig)
+    anchor: AnchorConfig = field(default_factory=AnchorConfig)
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
     concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
@@ -275,15 +297,36 @@ class PipelineConfig:
                     repetition_threshold=float(
                         merged.get("aux", {})
                         .get("header_footer", {})
-                        .get("repetition_threshold", 0.50)
+                        .get(
+                            "repetition_threshold",
+                            CONFIG_DEFAULTS["aux"]["header_footer"]["repetition_threshold"],
+                        )
                     ),
                     dropcap_max_fraction=float(
                         merged.get("aux", {})
                         .get("header_footer", {})
-                        .get("dropcap_max_fraction", 0.30)
+                        .get(
+                            "dropcap_max_fraction",
+                            CONFIG_DEFAULTS["aux"]["header_footer"]["dropcap_max_fraction"],
+                        )
+                    ),
+                    y_band_pct=float(
+                        merged.get("aux", {})
+                        .get("header_footer", {})
+                        .get(
+                            "y_band_pct",
+                            CONFIG_DEFAULTS["aux"]["header_footer"].get("y_band_pct", 0.07),
+                        )
                     ),
                 ),
-                y_band_pct=float(merged.get("aux", {}).get("y_band", {}).get("pct", 0.03)),
+                y_band_pct=float(
+                    merged.get("aux", {})
+                    .get("header_footer", {})
+                    .get(
+                        "y_band_pct",
+                        CONFIG_DEFAULTS["aux"]["header_footer"].get("y_band_pct", 0.07),
+                    )
+                ),
                 segment0_min_chars=int(
                     merged.get("aux", {}).get("segment0", {}).get("min_chars", 150)
                 ),
@@ -300,6 +343,36 @@ class PipelineConfig:
                     .get("soft_boundary", {})
                     .get("max_deferred_pages", 5)
                 ),
+                callout_column_width_fraction_max=float(
+                    merged.get("aux", {})
+                    .get("callout", {})
+                    .get(
+                        "column_width_fraction_max",
+                        CONFIG_DEFAULTS["aux"]["callout"]["column_width_fraction_max"],
+                    )
+                ),
+                font_band_small_quantile=float(
+                    merged.get("aux", {})
+                    .get("font_band", {})
+                    .get(
+                        "small_quantile",
+                        CONFIG_DEFAULTS["aux"]["font_band"]["small_quantile"],
+                    )
+                ),
+            ),
+            segments=SegmentConfig(
+                soft_boundary_pages=int(
+                    merged.get("segments", {}).get(
+                        "soft_boundary_pages", CONFIG_DEFAULTS["segments"]["soft_boundary_pages"]
+                    )
+                )
+            ),
+            anchor=AnchorConfig(
+                lookahead_pages=int(
+                    merged.get("anchor", {}).get(
+                        "lookahead_pages", CONFIG_DEFAULTS["anchor"]["lookahead_pages"]
+                    )
+                )
             ),
             timeouts=TimeoutConfig(
                 triage_seconds=int(merged.get("timeouts", {}).get("triage", {}).get("seconds", 5)),

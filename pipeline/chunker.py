@@ -35,6 +35,12 @@ class Chunk:
     aux_in_followup: bool
     link_prev: str | None
     link_next: str | None
+    segment_id: str | None
+    segment_seq: int | None
+    is_main_only: bool
+    is_aux_only: bool
+    aux_subtypes_present: List[str]
+    aux_group_seq: int | None
 
 
 class _NullTelemetry:
@@ -72,6 +78,12 @@ def _convert_chunks(doc_id: str, payloads: Iterable[SegmentChunk]) -> List[Chunk
             aux_in_followup=getattr(payload, "aux_in_followup", False),
             link_prev=None,
             link_next=None,
+            segment_id=getattr(payload, "segment_id", None),
+            segment_seq=getattr(payload, "segment_seq", None),
+            is_main_only=getattr(payload, "is_main_only", False),
+            is_aux_only=getattr(payload, "is_aux_only", False),
+            aux_subtypes_present=list(getattr(payload, "aux_subtypes_present", [])),
+            aux_group_seq=getattr(payload, "aux_group_seq", None),
         )
         chunks.append(chunk)
 
